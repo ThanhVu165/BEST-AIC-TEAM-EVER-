@@ -1,4 +1,4 @@
-"""Evaluate Query Engine candidates against a simple JSONL ground-truth file.
+"""Evaluate Query Engine candidates against a local JSONL ground-truth file.
 
 Expected JSONL rows contain a QueryRequest-compatible payload plus either
 ``relevant_video_ids`` or ``relevant_video_id``. Dataset and index files remain
@@ -10,7 +10,7 @@ import argparse
 import json
 from pathlib import Path
 
-from query_engine.evaluation import recall_at_ks
+from query_engine.evaluation import DEFAULT_KS, recall_at_ks
 from query_engine.runtime import build_clip_baseline_engine
 from schemas import QueryRequest
 
@@ -33,9 +33,11 @@ def main() -> int:
         device=args.device,
     )
 
-    totals = {1: 0.0, 5: 0.0, 20: 0.0, 50: 0.0, 100: 0.0}
+    totals = {int(k): 0.0 for k in DEFAULT_KS}
     count = 0
-    for line_number, line in enumerate(args.queries.read_text(encoding="utf-8").splitlines(), 1):
+    for line_number, line in enumerate(
+        args.queries.read_text(encoding="utf-8").splitlines(), 1
+    ):
         if not line.strip():
             continue
         row = json.loads(line)
@@ -52,17 +54,21 @@ def main() -> int:
             raise RuntimeError(f"query {request.query_id} failed: {response.error}")
         curve = recall_at_ks(response.candidates, relevant)
         for k, value in curve.items():
-            totals[k] += value
+            totals[int(k)] += value
         count += 1
 
     if count == 0:
         raise ValueError("no queries found")
 
+    recalls = {f"R@{k}": round(totals[k] / count, 6) for k in sorted(totals)}
+    final_score = sum(recalls.values()) / len(recalls)
     report = {
-        f"R@{k}": round(totals[k] / count, 6)
-        for k in sorted(totals)
+        "num_queries": count,
+        **recalls,
+        "FinalScore": round(final_score, 6),
+        "note": "video-level retrieval score; this is not the official task evaluator",
     }
-    print(json.dumps({"num_queries": count, **report}, indent=2))
+    print(json.dumps(report, indent=2))
     return 0
 
 
