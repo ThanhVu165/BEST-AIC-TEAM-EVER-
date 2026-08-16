@@ -9,6 +9,7 @@ from schemas import (
     TRAKECandidate,
     TRAKEEventPrediction,
 )
+
 from .interfaces import QueryEngine
 
 

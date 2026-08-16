@@ -16,10 +16,10 @@ from .contracts import (
     SearchResponse,
     SubmissionRequest,
     SubmissionResponse,
+    TaskType,
     TRAKECandidate,
     TRAKEEventPrediction,
     TRAKEResult,
-    TaskType,
     VideoRecord,
 )
 
@@ -39,9 +39,9 @@ __all__ = [
     "SearchResponse",
     "SubmissionRequest",
     "SubmissionResponse",
+    "TaskType",
     "TRAKECandidate",
     "TRAKEEventPrediction",
     "TRAKEResult",
-    "TaskType",
     "VideoRecord",
 ]
