@@ -53,14 +53,24 @@ class BaselineQueryEngine(QueryEngine):
         selected = select_semantic_keyframes(
             [self._frame_evidence(hit) for hit in hits], max_candidates=100
         )
+
+        # Official retrieval hits normally carry keyframe_n. Keep a frame-id
+        # fallback so KIS does not discard an otherwise valid hypothesis when a
+        # datastore/test double only exposes the source frame identity.
         by_keyframe = {
             (hit.video_id, hit.keyframe_n): hit
             for hit in hits
             if hit.keyframe_n is not None
         }
+        by_frame = {(hit.video_id, hit.frame_id): hit for hit in hits}
+
         results: list[dict[str, Any]] = []
         for item in selected:
-            hit = by_keyframe.get((item.video_id, item.keyframe_n))
+            hit = None
+            if item.keyframe_n is not None:
+                hit = by_keyframe.get((item.video_id, item.keyframe_n))
+            if hit is None:
+                hit = by_frame.get((item.video_id, item.frame_id))
             if hit is None:
                 continue
             results.append(
