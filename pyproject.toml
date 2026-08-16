@@ -33,9 +33,6 @@ dev = [
     "pytest>=8.3",
     "ruff>=0.6",
 ]
-all = [
-    "aic2026-video-retrieval[ml,api,ui,dev]",
-]
 
 [tool.ruff]
 line-length = 100
@@ -45,4 +42,4 @@ target-version = "py310"
 testpaths = ["tests"]
 
 [tool.setuptools.packages.find]
-include = ["schemas*", "video_pipeline*", "query_engine*", "api*", "ui*"]
+include = ["schemas*", "data_layer*", "video_pipeline*", "query_engine*", "api*", "ui*"]
