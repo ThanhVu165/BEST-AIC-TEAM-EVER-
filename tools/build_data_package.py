@@ -138,11 +138,14 @@ def build(data_root: Path, db_path: Path, index_path: Path, mapping_out: Path) -
     rows_for_index: list[dict[str, Any]] = []
     dimension: int | None = None
 
+    # This is a generated artifact. Recreate it so schema changes are applied
+    # deterministically instead of leaving an older SQLite table definition.
+    if db_path.exists():
+        db_path.unlink()
+
     with sqlite3.connect(db_path) as conn:
         conn.execute("PRAGMA foreign_keys = ON")
         conn.executescript(SCHEMA.read_text(encoding="utf-8"))
-        for table in ("asr_segments", "ocr", "metadata", "objects", "frames", "videos"):
-            conn.execute(f"DELETE FROM {table}")
 
         for video_id in ids:
             clip = np.load(clip_files[video_id], mmap_mode="r")
