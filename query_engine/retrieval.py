@@ -22,6 +22,7 @@ class RetrievalHit:
     video_id: str
     frame_id: int
     score: float
+    keyframe_n: int | None = None
     faiss_id: int | None = None
     sources: tuple[str, ...] = ("clip",)
     object_score: float = 0.0
@@ -76,7 +77,7 @@ class ClipCandidateRetriever:
 
         ranked = sorted(
             best.values(),
-            key=lambda item: (-item.score, item.video_id, item.frame_id),
+            key=lambda item: (-item.score, item.video_id, item.frame_id, item.keyframe_n or 0),
         )
         return ranked[: self.video_top_k]
 
@@ -90,12 +91,13 @@ class ClipCandidateRetriever:
         getter = getattr(self.datastore, "get_objects", None)
         for hit in hits:
             object_score = 0.0
-            record = getter(hit.video_id, hit.frame_id) if getter is not None else None
-            if record is not None and query_tokens:
-                for detection in record.objects:
-                    label_tokens = _tokens(detection.label)
-                    if label_tokens and label_tokens.issubset(query_tokens):
-                        object_score = max(object_score, float(detection.confidence))
+            if getter is not None and hit.keyframe_n is not None:
+                record = getter(hit.video_id, hit.keyframe_n)
+                if record is not None and query_tokens:
+                    for detection in record.objects:
+                        label_tokens = _tokens(detection.label)
+                        if label_tokens and label_tokens.issubset(query_tokens):
+                            object_score = max(object_score, float(detection.confidence))
 
             retrieval_score = hit.retrieval_score
             if retrieval_score is None:
@@ -112,6 +114,7 @@ class ClipCandidateRetriever:
                     video_id=hit.video_id,
                     frame_id=hit.frame_id,
                     score=fused,
+                    keyframe_n=hit.keyframe_n,
                     faiss_id=hit.faiss_id,
                     sources=tuple(sources),
                     object_score=object_score,
@@ -122,16 +125,21 @@ class ClipCandidateRetriever:
 
     @staticmethod
     def _rank_frames(hits: list[RetrievalHit]) -> list[RetrievalHit]:
-        unique: dict[tuple[str, int], RetrievalHit] = {}
+        unique: dict[tuple[str, int, int | None], RetrievalHit] = {}
         for hit in hits:
-            key = (hit.video_id, hit.frame_id)
+            key = (hit.video_id, hit.frame_id, hit.keyframe_n)
             previous = unique.get(key)
             if previous is None or hit.score > previous.score:
                 unique[key] = hit
 
         return sorted(
             unique.values(),
-            key=lambda item: (-item.score, item.video_id, item.frame_id),
+            key=lambda item: (
+                -item.score,
+                item.video_id,
+                item.frame_id,
+                item.keyframe_n or 0,
+            ),
         )
 
     @staticmethod
@@ -143,6 +151,9 @@ class ClipCandidateRetriever:
         except (KeyError, TypeError, ValueError) as exc:
             raise ValueError(f"Invalid retrieval hit: {item!r}") from exc
 
+        keyframe_n = item.get("keyframe_n")
+        if keyframe_n is not None:
+            keyframe_n = int(keyframe_n)
         faiss_id = item.get("faiss_id")
         if faiss_id is not None:
             faiss_id = int(faiss_id)
@@ -150,6 +161,7 @@ class ClipCandidateRetriever:
             video_id=video_id,
             frame_id=frame_id,
             score=score,
+            keyframe_n=keyframe_n,
             faiss_id=faiss_id,
             retrieval_score=score,
         )
