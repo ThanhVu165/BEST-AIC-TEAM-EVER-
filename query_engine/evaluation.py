@@ -43,7 +43,10 @@ def mean_recall_at_ks(
     ks: Sequence[int] = DEFAULT_KS,
 ) -> dict[int, float]:
     """Average Recall@K over a query collection."""
-    rows = [recall_at_ks(ranked, relevant, ks) for ranked, relevant in zip(ranked_lists, relevant_sets)]
+    rows = [
+        recall_at_ks(ranked, relevant, ks)
+        for ranked, relevant in zip(ranked_lists, relevant_sets)
+    ]
     if not rows:
         return {int(k): 0.0 for k in ks}
     return {
