@@ -1,7 +1,6 @@
 from __future__ import annotations
 
-from collections.abc import Iterable, Sequence
-from typing import Any
+from typing import Any, Iterable, Sequence
 
 
 DEFAULT_KS = (1, 5, 20, 50, 100)
@@ -48,10 +47,7 @@ def mean_recall_at_ks(
     ]
     if not rows:
         return {int(k): 0.0 for k in ks}
-    return {
-        int(k): sum(row[int(k)] for row in rows) / len(rows)
-        for k in ks
-    }
+    return {int(k): sum(row[int(k)] for row in rows) / len(rows) for k in ks}
 
 
 def _video_id(candidate: Any) -> str:
