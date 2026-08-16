@@ -1,9 +1,4 @@
-"""Runtime factory for the real CLIP retrieval baseline.
-
-This module is intentionally independent of FastAPI. It wires the existing
-DataStore/FAISS abstractions to the query engine once an offline data package
-has been generated.
-"""
+"""Runtime factory for the real CLIP retrieval baseline."""
 from __future__ import annotations
 
 from pathlib import Path
@@ -26,6 +21,7 @@ def build_clip_baseline_engine(
     frame_top_k: int = 200,
     video_top_k: int = 50,
     max_frames_per_video: int = 3,
+    object_weight: float = 0.10,
 ) -> BaselineQueryEngine:
     """Construct a real offline-data-backed CLIP retrieval engine."""
     clip_store = FAISSFrameStore(index_path=index_path, mapping_path=mapping_path)
@@ -38,5 +34,6 @@ def build_clip_baseline_engine(
         frame_top_k=frame_top_k,
         video_top_k=video_top_k,
         max_frames_per_video=max_frames_per_video,
+        object_weight=object_weight,
     )
     return BaselineQueryEngine(retriever)
