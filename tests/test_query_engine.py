@@ -30,7 +30,6 @@ def make_engine() -> BaselineQueryEngine:
         FakeEmbedder(),
         frame_top_k=10,
         video_top_k=10,
-        max_frames_per_video=3,
     )
     return BaselineQueryEngine(retriever)
 
