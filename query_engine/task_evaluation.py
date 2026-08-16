@@ -1,20 +1,9 @@
-"""Competition-aligned task scoring for local validation.
-
-The formulas mirror the AIC 2026 preliminary-round description:
-- KIS: correct video + frame inside the accepted interval.
-- QA: KIS conditions + answer match.
-- TRAKE: correct video + fraction of event frames inside their intervals.
-- Final Score: mean of the best R-Score at ranks 1, 5, 20, 50, 100.
-
-Answer matching is intentionally explicit and conservative. The BTC document
-requires semantic answer matching but does not specify an automatic text
-metric, so this module supports an exact normalized match or an accepted-answer
-list rather than pretending to reproduce the hidden semantic judge.
-"""
+"""Competition-aligned task scoring for local validation."""
 from __future__ import annotations
 
 import re
-from typing import Any, Iterable, Sequence
+from collections.abc import Iterable, Sequence
+from typing import Any
 
 DEFAULT_KS = (1, 5, 20, 50, 100)
 
@@ -42,12 +31,10 @@ def trake_r_score(candidate: Any, ground_truth: dict[str, Any]) -> float:
     """Score one TRAKE candidate as the fraction of correctly localized events."""
     if _get(candidate, "video_id") != str(ground_truth["video_id"]):
         return 0.0
-
     predicted = _event_predictions(candidate)
     gt_events = ground_truth.get("events", [])
     if not gt_events:
         raise ValueError("TRAKE ground truth must contain events")
-
     correct = 0
     for event in gt_events:
         event_id = str(event["event_id"])
@@ -114,10 +101,7 @@ def _frame_interval(record: dict[str, Any]) -> tuple[int, int]:
 
 
 def _event_predictions(candidate: Any) -> dict[str, int]:
-    if isinstance(candidate, dict):
-        events = candidate.get("events", [])
-    else:
-        events = getattr(candidate, "events", [])
+    events = candidate.get("events", []) if isinstance(candidate, dict) else getattr(candidate, "events", [])
     output: dict[str, int] = {}
     for event in events:
         if isinstance(event, dict):
