@@ -11,6 +11,7 @@ class FrameEvidence:
 
     video_id: str
     frame_id: int
+    keyframe_n: int | None
     timestamp: float | None
     retrieval_score: float
 
@@ -21,6 +22,7 @@ class TemporalCandidate:
 
     video_id: str
     frame_id: int
+    keyframe_n: int | None
     timestamp: float | None
     score: float
     rank: int
@@ -51,12 +53,14 @@ def select_semantic_keyframes(
             -_safe_score(item.retrieval_score),
             item.video_id,
             item.frame_id,
+            item.keyframe_n or 0,
         ),
     )
     return [
         TemporalCandidate(
             video_id=item.video_id,
             frame_id=item.frame_id,
+            keyframe_n=item.keyframe_n,
             timestamp=item.timestamp,
             score=_safe_score(item.retrieval_score),
             rank=rank,
@@ -77,7 +81,10 @@ def group_into_temporal_windows(
     """
     if max_gap_frames < 0:
         raise ValueError("max_gap_frames must be >= 0")
-    ordered = sorted(frames, key=lambda item: (item.video_id, item.frame_id))
+    ordered = sorted(
+        frames,
+        key=lambda item: (item.video_id, item.frame_id, item.keyframe_n or 0),
+    )
     windows: list[list[FrameEvidence]] = []
     current: list[FrameEvidence] = []
     previous_video: str | None = None
