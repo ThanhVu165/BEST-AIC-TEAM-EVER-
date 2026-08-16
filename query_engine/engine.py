@@ -9,7 +9,7 @@ from schemas import Candidate, QACandidate, QueryRequest, SearchResponse, TRAKEC
 from .answering import AnswerEvidence, AnswerExtractor, UnavailableAnswerExtractor
 from .interfaces import QueryEngine
 from .retrieval import ClipCandidateRetriever, RetrievalHit
-from .temporal import FrameEvidence, select_semantic_keyframes
+from .temporal import FrameEvidence, select_ordered_event_frames, select_semantic_keyframes
 
 
 class BaselineQueryEngine(QueryEngine):
@@ -66,7 +66,7 @@ class BaselineQueryEngine(QueryEngine):
                 continue
             results.append(
                 Candidate(
-                    rank=item.rank,
+                    rank=len(results) + 1,
                     video_id=item.video_id,
                     frame_id=item.frame_id,
                     score=item.score,
@@ -120,6 +120,9 @@ class BaselineQueryEngine(QueryEngine):
         if not request.events:
             raise ValueError("TRAKE requires at least one event")
 
+        # Retrieve independently for each event, but keep the full frame pool.
+        # The final video ranking is then based on all events jointly rather
+        # than on the first event alone.
         per_event: dict[str, list[RetrievalHit]] = {}
         for event in request.events:
             description = event.description.strip()
@@ -127,50 +130,54 @@ class BaselineQueryEngine(QueryEngine):
                 raise ValueError(f"event {event.event_id!r} has empty description")
             per_event[event.event_id] = self.retriever.retrieve(description)
 
-        video_scores: dict[str, list[float]] = defaultdict(list)
+        video_ids: set[str] = set()
         for hits in per_event.values():
-            best_by_video: dict[str, float] = {}
-            for hit in hits:
-                best_by_video[hit.video_id] = max(
-                    best_by_video.get(hit.video_id, float("-inf")), hit.score
-                )
-            for video_id, score in best_by_video.items():
-                video_scores[video_id].append(score)
+            video_ids.update(hit.video_id for hit in hits)
 
-        complete = [
-            (video_id, sum(scores) / len(scores))
-            for video_id, scores in video_scores.items()
-            if len(scores) == len(request.events)
-        ]
-        complete.sort(key=lambda item: (-item[1], item[0]))
+        scored_videos: list[tuple[str, float, dict[str, list[RetrievalHit]]]] = []
+        for video_id in video_ids:
+            event_hits: dict[str, list[RetrievalHit]] = {}
+            best_scores: list[float] = []
+            complete = True
+            for event in request.events:
+                hits = [hit for hit in per_event[event.event_id] if hit.video_id == video_id]
+                if not hits:
+                    complete = False
+                    break
+                event_hits[event.event_id] = hits
+                best_scores.append(max(hit.score for hit in hits))
+            if complete:
+                # Mean evidence rewards videos that explain every event while
+                # avoiding domination by one exceptionally strong event.
+                scored_videos.append((video_id, sum(best_scores) / len(best_scores), event_hits))
+
+        scored_videos.sort(key=lambda item: (-item[1], item[0]))
 
         results: list[dict[str, Any]] = []
-        for rank, (video_id, video_score) in enumerate(complete[:100], start=1):
-            event_predictions = []
-            for event in request.events:
-                hits = [
-                    hit
-                    for hit in per_event[event.event_id]
-                    if hit.video_id == video_id
-                ]
-                selected = select_semantic_keyframes(
-                    [self._frame_evidence(hit) for hit in hits], max_candidates=1
-                )
-                if not selected:
-                    break
-                frame = selected[0]
-                event_predictions.append(
-                    {
-                        "event_id": event.event_id,
-                        "frame_id": frame.frame_id,
-                        "score": frame.score,
-                    }
-                )
-            if len(event_predictions) != len(request.events):
+        for video_id, video_score, event_hits in scored_videos[:100]:
+            ordered_inputs = [
+                [self._frame_evidence(hit) for hit in event_hits[event.event_id]]
+                for event in request.events
+            ]
+            selected = select_ordered_event_frames(
+                ordered_inputs,
+                max_candidates_per_event=100,
+                allow_same_frame=True,
+            )
+            if len(selected) != len(request.events):
                 continue
+
+            event_predictions = [
+                {
+                    "event_id": event.event_id,
+                    "frame_id": selected[idx].frame_id,
+                    "score": selected[idx].score,
+                }
+                for idx, event in enumerate(request.events)
+            ]
             results.append(
                 TRAKECandidate(
-                    rank=rank,
+                    rank=len(results) + 1,
                     video_id=video_id,
                     events=event_predictions,
                     score=video_score,
