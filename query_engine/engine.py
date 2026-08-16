@@ -1,8 +1,7 @@
 """Baseline Query Engine orchestration.
 
-This is intentionally a small, deterministic baseline. It establishes the
-online inference boundary without pretending to solve temporal localization
-or Q&A/TRAKE semantics before those components exist.
+This establishes the online inference boundary without pretending to solve
+answer extraction or temporal alignment before those components exist.
 """
 from __future__ import annotations
 
@@ -13,23 +12,61 @@ from .retrieval import ClipCandidateRetriever
 
 
 class BaselineQueryEngine(QueryEngine):
-    """Run CLIP retrieval and produce contract-valid ranked candidates.
-
-    KIS currently uses the retrieved best frame directly. QA and TRAKE keep the
-    same retrieved video/frame hypotheses but expose explicit baseline limits:
-    answer extraction and fine temporal alignment are not silently fabricated.
-    """
+    """Run CLIP retrieval and produce contract-valid ranked candidates."""
 
     def __init__(self, retriever: ClipCandidateRetriever) -> None:
         self.retriever = retriever
 
     def search(self, request: QueryRequest) -> SearchResponse:
         task = request.task or self._infer_task(request)
-        query_text = self._build_query_text(request, task)
-
         try:
-            hits = self.retriever.retrieve(query_text)
-        except Exception as exc:  # API boundary converts this into failed status.
+            query_text = self._build_query_text(request, task)
+            if task == "KIS":
+                hits = self.retriever.retrieve(query_text)
+                candidates = [
+                    Candidate(
+                        rank=rank,
+                        video_id=hit.video_id,
+                        frame_id=hit.frame_id,
+                        score=hit.score,
+                        retrieval_score=hit.score,
+                        evidence={"sources": list(hit.sources)},
+                    ).model_dump()
+                    for rank, hit in enumerate(hits, start=1)
+                ]
+            elif task == "QA":
+                hits = self.retriever.retrieve_videos(query_text)
+                # Do not invent an answer. The candidate evidence is still useful
+                # for integration and for a later dedicated answer extractor.
+                candidates = [
+                    QACandidate(
+                        rank=rank,
+                        video_id=hit.video_id,
+                        frame_id=hit.frame_id,
+                        score=hit.score,
+                        answer="",
+                        retrieval_score=hit.score,
+                        evidence={
+                            "sources": list(hit.sources),
+                            "answer_status": "not_generated",
+                        },
+                    ).model_dump()
+                    for rank, hit in enumerate(hits, start=1)
+                ]
+            else:
+                hits = self.retriever.retrieve_videos(query_text)
+                # TRAKE alignment is not fabricated. The retrieved video
+                # hypotheses are exposed until a temporal aligner is plugged in.
+                candidates = [
+                    TRAKECandidate(
+                        rank=rank,
+                        video_id=hit.video_id,
+                        events=[],
+                        score=hit.score,
+                    ).model_dump()
+                    for rank, hit in enumerate(hits, start=1)
+                ]
+        except Exception as exc:
             return SearchResponse(
                 query_id=request.query_id,
                 task=task,
@@ -37,51 +74,6 @@ class BaselineQueryEngine(QueryEngine):
                 candidates=[],
                 error=str(exc),
             )
-
-        if task == "KIS":
-            candidates = [
-                Candidate(
-                    rank=rank,
-                    video_id=hit.video_id,
-                    frame_id=hit.frame_id,
-                    score=hit.score,
-                    retrieval_score=hit.score,
-                    evidence={"sources": list(hit.sources)},
-                ).model_dump()
-                for rank, hit in enumerate(hits, start=1)
-            ]
-        elif task == "QA":
-            # Do not invent an answer. The candidate evidence is still useful
-            # for integration and for a later dedicated answer extractor.
-            answer = ""
-            candidates = [
-                QACandidate(
-                    rank=rank,
-                    video_id=hit.video_id,
-                    frame_id=hit.frame_id,
-                    score=hit.score,
-                    answer=answer,
-                    retrieval_score=hit.score,
-                    evidence={
-                        "sources": list(hit.sources),
-                        "answer_status": "not_generated",
-                    },
-                ).model_dump()
-                for rank, hit in enumerate(hits, start=1)
-            ]
-        else:
-            # TRAKE alignment is not fabricated. The retrieved video hypotheses
-            # are exposed with no event predictions until a temporal aligner is
-            # plugged in.
-            candidates = [
-                TRAKECandidate(
-                    rank=rank,
-                    video_id=hit.video_id,
-                    events=[],
-                    score=hit.score,
-                ).model_dump()
-                for rank, hit in enumerate(hits, start=1)
-            ]
 
         return SearchResponse(
             query_id=request.query_id,
@@ -109,7 +101,7 @@ class BaselineQueryEngine(QueryEngine):
             parts.append(request.question.strip())
         if task == "TRAKE":
             parts.extend(
-                f"{event.event_id}: {event.description.strip()}"
+                event.description.strip()
                 for event in request.events
                 if event.description.strip()
             )
