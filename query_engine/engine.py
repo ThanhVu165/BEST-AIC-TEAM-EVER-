@@ -54,21 +54,30 @@ class BaselineQueryEngine(QueryEngine):
         selected = select_semantic_keyframes(
             [self._frame_evidence(hit) for hit in hits], max_candidates=100
         )
-        by_frame = {(hit.video_id, hit.frame_id): hit for hit in hits}
+        by_frame = {(hit.video_id, hit.frame_id, hit.keyframe_n): hit for hit in hits}
         return [
             Candidate(
                 rank=item.rank,
                 video_id=item.video_id,
                 frame_id=item.frame_id,
                 score=item.score,
-                retrieval_score=by_frame[(item.video_id, item.frame_id)].retrieval_score,
+                retrieval_score=by_frame[(item.video_id, item.frame_id, self._keyframe_n_for(item, hits))].retrieval_score,
                 temporal_score=item.score,
                 evidence=self._ranking_evidence(
-                    by_frame[(item.video_id, item.frame_id)]
+                    by_frame[(item.video_id, item.frame_id, self._keyframe_n_for(item, hits))]
                 ),
             ).model_dump()
             for item in selected
         ]
+
+    @staticmethod
+    def _keyframe_n_for(item, hits: list[RetrievalHit]) -> int | None:
+        matches = [
+            hit.keyframe_n
+            for hit in hits
+            if hit.video_id == item.video_id and hit.frame_id == item.frame_id
+        ]
+        return matches[0] if matches else None
 
     def _solve_qa(self, request: QueryRequest) -> list[dict[str, Any]]:
         query_text = self._build_query_text(request, "QA")
@@ -178,13 +187,14 @@ class BaselineQueryEngine(QueryEngine):
             "clip_score": hit.retrieval_score,
             "object_score": hit.object_score,
             "fused_score": hit.score,
+            "keyframe_n": hit.keyframe_n,
         }
 
     def _frame_record(self, hit: RetrievalHit):
         getter = getattr(self.retriever.datastore, "get_frame", None)
-        if getter is None:
+        if getter is None or hit.keyframe_n is None:
             return None
-        return getter(hit.video_id, hit.frame_id)
+        return getter(hit.video_id, hit.keyframe_n)
 
     def _frame_evidence(self, hit: RetrievalHit) -> FrameEvidence:
         frame = self._frame_record(hit)
