@@ -1,0 +1,68 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# IDE / OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+# Secrets / local configuration
+.env
+.env.*
+!.env.example
+
+# Data and generated artifacts — never commit competition data
+/data/raw/*
+/data/processed/*
+/database/*
+/indexes/*
+/models/*
+/checkpoints/*
+/artifacts/*
+/runs/*
+/logs/*
+
+# Allow directory placeholders
+!/data/raw/.gitkeep
+!/data/processed/.gitkeep
+!/database/.gitkeep
+!/indexes/.gitkeep
+
+# Large media / feature files
+*.mp4
+*.avi
+*.mov
+*.mkv
+*.webm
+*.jpg
+*.jpeg
+*.png
+*.npy
+*.npz
+*.pt
+*.pth
+*.safetensors
+*.onnx
+*.bin
+
+# Local databases
+*.sqlite
+*.sqlite3
+
+# Generated submission files
+submission*.csv
+submission*.json
