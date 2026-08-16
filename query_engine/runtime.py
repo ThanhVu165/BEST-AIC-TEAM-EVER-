@@ -21,7 +21,6 @@ def build_clip_baseline_engine(
     device: str = "auto",
     frame_top_k: int = 200,
     video_top_k: int = 50,
-    max_frames_per_video: int = 3,
     object_weight: float = 0.10,
     vlm_model_name: str | None = None,
     vlm_device: str | None = None,
@@ -36,7 +35,6 @@ def build_clip_baseline_engine(
         embedder,
         frame_top_k=frame_top_k,
         video_top_k=video_top_k,
-        max_frames_per_video=max_frames_per_video,
         object_weight=object_weight,
     )
     answer_extractor = None
