@@ -30,15 +30,20 @@ class RetrievalHit:
 
 
 class ClipCandidateRetriever:
-    """Retrieve frame hypotheses and optionally fuse object evidence."""
+    """Retrieve frame hypotheses and optionally fuse object evidence.
+
+    The default frame pool is intentionally much larger than the final
+    submission cutoff. The official metric rewards the best result at 1/5/20/
+    50/100, so collapsing too early can destroy recall before ranking begins.
+    """
 
     def __init__(
         self,
         datastore: DataStore,
         embedder: QueryEmbedder,
         *,
-        frame_top_k: int = 200,
-        video_top_k: int = 50,
+        frame_top_k: int = 1000,
+        video_top_k: int = 100,
         object_weight: float = 0.10,
     ) -> None:
         if frame_top_k <= 0:
@@ -96,7 +101,13 @@ class ClipCandidateRetriever:
                 if record is not None and query_tokens:
                     for detection in record.objects:
                         label_tokens = _tokens(detection.label)
-                        if label_tokens and label_tokens.issubset(query_tokens):
+                        if not label_tokens:
+                            continue
+                        # Exact token containment is deliberately conservative:
+                        # object detections are auxiliary evidence and must not
+                        # override CLIP retrieval on vague lexical matches.
+                        overlap = len(label_tokens & query_tokens) / len(label_tokens)
+                        if overlap == 1.0:
                             object_score = max(object_score, float(detection.confidence))
 
             retrieval_score = hit.retrieval_score
