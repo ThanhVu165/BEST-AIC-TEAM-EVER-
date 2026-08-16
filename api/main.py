@@ -1,12 +1,14 @@
-"""FastAPI integration skeleton.
+"""FastAPI boundary between Query Engine and UI.
 
-The actual Query Engine is intentionally injected later. UI and Query Engine
-can develop independently against this stable API surface.
+The default runtime uses MockQueryEngine so all three team members can run an
+end-to-end system before real retrieval is ready. Replace the engine factory
+without changing API schemas or the Streamlit client.
 """
 from __future__ import annotations
 
 from fastapi import FastAPI, HTTPException
 
+from query_engine import MockQueryEngine
 from schemas import QueryRequest, SearchResponse, SubmissionRequest, SubmissionResponse
 
 app = FastAPI(
@@ -16,40 +18,56 @@ app = FastAPI(
     redoc_url="/redoc",
 )
 
+engine = MockQueryEngine()
+_results: dict[str, SearchResponse] = {}
+
 
 @app.get("/health")
 def health() -> dict[str, str]:
-    return {"status": "ok"}
+    return {"status": "ok", "engine": engine.__class__.__name__}
 
 
 @app.post("/api/v1/search", response_model=SearchResponse)
 def search(request: QueryRequest) -> SearchResponse:
-    if request.task is None:
-        raise HTTPException(status_code=422, detail="task must be provided in API v1")
-
-    raise HTTPException(
-        status_code=501,
-        detail="Query Engine is not connected yet. Use mock mode in UI until integration is ready.",
-    )
+    result = engine.search(request)
+    _results[request.query_id] = result
+    return result
 
 
-@app.get("/api/v1/result/{query_id}")
-def get_result(query_id: str) -> dict[str, str]:
-    raise HTTPException(status_code=404, detail=f"No result stored for {query_id}")
+@app.get("/api/v1/result/{query_id}", response_model=SearchResponse)
+def get_result(query_id: str) -> SearchResponse:
+    result = _results.get(query_id)
+    if result is None:
+        raise HTTPException(status_code=404, detail=f"No result stored for {query_id}")
+    return result
 
 
 @app.get("/api/v1/video/{video_id}")
 def get_video(video_id: str) -> dict[str, str]:
-    raise HTTPException(status_code=501, detail="Video data service is not connected yet")
+    # Real DataStore integration will replace this endpoint implementation.
+    return {"video_id": video_id, "status": "not_connected"}
 
 
 @app.get("/api/v1/video/{video_id}/frame/{frame_id}")
 def get_frame(video_id: str, frame_id: int) -> dict[str, str | int]:
-    raise HTTPException(status_code=501, detail="Video data service is not connected yet")
+    # Returning identifiers now keeps UI integration testable before the data
+    # package is mounted on the machine running FastAPI.
+    return {
+        "video_id": video_id,
+        "frame_id": frame_id,
+        "status": "not_connected",
+    }
 
 
 @app.post("/api/v1/submission", response_model=SubmissionResponse)
 def create_submission(request: SubmissionRequest) -> SubmissionResponse:
-    if not request.query_ids:
-        raise HTTPException(status_code=422, detail="query_ids must not be empty")
-    raise HTTPException(status_code=501, detail="Submission service is not connected yet")
+    missing = [query_id for query_id in request.query_ids if query_id not in _results]
+    if missing:
+        raise HTTPException(
+            status_code=404,
+            detail=f"No result stored for query_ids: {missing}",
+        )
+    return SubmissionResponse(
+        status="completed",
+        file_name="submission_mock.json",
+    )
