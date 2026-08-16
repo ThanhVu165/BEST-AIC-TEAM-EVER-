@@ -3,9 +3,9 @@
 The validator checks the invariants required by the Query Engine runtime:
 - SQLite contains the expected video/frame/object tables and columns.
 - FAISS mapping length equals the index size.
-- Every mapping entry has a source video_id and original frame_id.
-- Mapping pairs are unique.
-- Mapped pairs can be resolved from the SQLite frames table.
+- Every mapping entry has a source video_id, keyframe_n and original frame_id.
+- Mapping keyframes are unique.
+- Every mapping entry resolves to the corresponding SQLite frame row.
 """
 from __future__ import annotations
 
@@ -47,11 +47,15 @@ def main() -> int:
     for internal_id, item in enumerate(payload):
         if not isinstance(item, dict):
             raise TypeError(f"mapping[{internal_id}] is not an object")
-        if "video_id" not in item or "frame_id" not in item:
-            raise ValueError(f"mapping[{internal_id}] lacks video_id/frame_id")
-        pairs.append((str(item["video_id"]), int(item["frame_id"])))
+        required_mapping = {"video_id", "keyframe_n", "frame_id"}
+        if required_mapping - set(item):
+            raise ValueError(
+                f"mapping[{internal_id}] lacks {sorted(required_mapping)}"
+            )
+        pairs.append((str(item["video_id"]), int(item["keyframe_n"])))
+        int(item["frame_id"])
     if len(set(pairs)) != len(pairs):
-        raise ValueError("mapping contains duplicate (video_id, frame_id) pairs")
+        raise ValueError("mapping contains duplicate (video_id, keyframe_n) pairs")
 
     with sqlite3.connect(args.db) as conn:
         tables = {
@@ -66,7 +70,7 @@ def main() -> int:
         video_columns = _table_columns(conn, "videos")
         frame_columns = _table_columns(conn, "frames")
         required_video = {"video_id", "path"}
-        required_frame = {"video_id", "frame_id", "timestamp", "path"}
+        required_frame = {"video_id", "keyframe_n", "frame_id", "timestamp", "path"}
         if required_video - video_columns:
             raise ValueError(
                 f"videos missing columns: {sorted(required_video - video_columns)}"
@@ -83,9 +87,9 @@ def main() -> int:
             object_count = int(conn.execute("SELECT COUNT(*) FROM objects").fetchone()[0])
 
         missing_pairs = 0
-        query = "SELECT 1 FROM frames WHERE video_id = ? AND frame_id = ? LIMIT 1"
-        for video_id, frame_id in pairs:
-            if conn.execute(query, (video_id, frame_id)).fetchone() is None:
+        query = "SELECT 1 FROM frames WHERE video_id = ? AND keyframe_n = ? LIMIT 1"
+        for video_id, keyframe_n in pairs:
+            if conn.execute(query, (video_id, keyframe_n)).fetchone() is None:
                 missing_pairs += 1
 
     report = {
