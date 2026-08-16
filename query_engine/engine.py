@@ -54,30 +54,28 @@ class BaselineQueryEngine(QueryEngine):
         selected = select_semantic_keyframes(
             [self._frame_evidence(hit) for hit in hits], max_candidates=100
         )
-        by_frame = {(hit.video_id, hit.frame_id, hit.keyframe_n): hit for hit in hits}
-        return [
-            Candidate(
-                rank=item.rank,
-                video_id=item.video_id,
-                frame_id=item.frame_id,
-                score=item.score,
-                retrieval_score=by_frame[(item.video_id, item.frame_id, self._keyframe_n_for(item, hits))].retrieval_score,
-                temporal_score=item.score,
-                evidence=self._ranking_evidence(
-                    by_frame[(item.video_id, item.frame_id, self._keyframe_n_for(item, hits))]
-                ),
-            ).model_dump()
-            for item in selected
-        ]
-
-    @staticmethod
-    def _keyframe_n_for(item, hits: list[RetrievalHit]) -> int | None:
-        matches = [
-            hit.keyframe_n
+        by_keyframe = {
+            (hit.video_id, hit.keyframe_n): hit
             for hit in hits
-            if hit.video_id == item.video_id and hit.frame_id == item.frame_id
-        ]
-        return matches[0] if matches else None
+            if hit.keyframe_n is not None
+        }
+        results: list[dict[str, Any]] = []
+        for item in selected:
+            hit = by_keyframe.get((item.video_id, item.keyframe_n))
+            if hit is None:
+                continue
+            results.append(
+                Candidate(
+                    rank=item.rank,
+                    video_id=item.video_id,
+                    frame_id=item.frame_id,
+                    score=item.score,
+                    retrieval_score=hit.retrieval_score,
+                    temporal_score=item.score,
+                    evidence=self._ranking_evidence(hit),
+                ).model_dump()
+            )
+        return results
 
     def _solve_qa(self, request: QueryRequest) -> list[dict[str, Any]]:
         query_text = self._build_query_text(request, "QA")
@@ -201,6 +199,7 @@ class BaselineQueryEngine(QueryEngine):
         return FrameEvidence(
             video_id=hit.video_id,
             frame_id=hit.frame_id,
+            keyframe_n=hit.keyframe_n,
             timestamp=frame.timestamp if frame is not None else None,
             retrieval_score=hit.score,
         )
