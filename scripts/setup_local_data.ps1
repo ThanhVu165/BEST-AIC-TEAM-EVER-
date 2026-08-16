@@ -1,9 +1,8 @@
-$ErrorActionPreference = "Stop"
-
 param(
     [string]$DataRoot = ".\data\raw"
 )
 
+$ErrorActionPreference = "Stop"
 $DataRoot = (Resolve-Path $DataRoot).Path
 
 Write-Host "AIC data root: $DataRoot"
