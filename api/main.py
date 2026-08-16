@@ -93,11 +93,13 @@ def get_frame(video_id: str, frame_id: int) -> dict[str, object]:
             "frame_id": frame_id,
             "status": "not_connected",
         }
-    record = datastore.get_frame(video_id, frame_id)
+
+    getter = getattr(datastore, "get_frame_by_id", None)
+    record = getter(video_id, frame_id) if getter is not None else None
     if record is None:
         raise HTTPException(
             status_code=404,
-            detail=f"Frame not found: {video_id}/{frame_id}",
+            detail=f"Source frame not found: {video_id}/{frame_id}",
         )
     return record.model_dump()
 
