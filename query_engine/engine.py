@@ -6,7 +6,7 @@ from typing import Any
 
 from schemas import Candidate, QACandidate, QueryRequest, SearchResponse, TRAKECandidate
 
-from .answering import AnswerExtractor, UnavailableAnswerExtractor
+from .answering import AnswerEvidence, AnswerExtractor, UnavailableAnswerExtractor
 from .interfaces import QueryEngine
 from .retrieval import ClipCandidateRetriever, RetrievalHit
 from .temporal import FrameEvidence, select_semantic_keyframes
@@ -78,7 +78,7 @@ class BaselineQueryEngine(QueryEngine):
             confidence = None
             if frame is not None:
                 result = self.answer_extractor.answer(
-                    __import__("query_engine.answering", fromlist=["AnswerEvidence"]).AnswerEvidence(
+                    AnswerEvidence(
                         video_id=hit.video_id,
                         frame_id=hit.frame_id,
                         frame_path=frame.path,
