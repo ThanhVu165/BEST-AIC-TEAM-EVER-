@@ -1,6 +1,7 @@
 """Stable data-access boundary consumed by Query Engine."""
 from __future__ import annotations
 
+import json
 import sqlite3
 from abc import ABC, abstractmethod
 from pathlib import Path
@@ -8,7 +9,7 @@ from typing import Any
 
 import numpy as np
 
-from schemas.contracts import FrameRecord, ObjectRecord, VideoRecord
+from schemas.contracts import ASRSegment, FrameRecord, OCRRecord, ObjectRecord, VideoRecord
 
 
 class DataStore(ABC):
@@ -38,7 +39,11 @@ class DataStore(ABC):
 
 
 class LocalDataStore(DataStore):
-    """SQLite + optional FAISS implementation for a single-machine deployment."""
+    """SQLite + optional FAISS implementation for a single-machine deployment.
+
+    OCR/ASR/metadata accessors are concrete optional extensions rather than
+    abstract methods so existing Query Engine test doubles remain compatible.
+    """
 
     def __init__(self, db_path: str | Path, clip_index: Any | None = None):
         self.db_path = Path(db_path)
@@ -104,6 +109,45 @@ class LocalDataStore(DataStore):
             for row in rows
         ]
         return ObjectRecord(video_id=video_id, frame_id=frame_id, objects=objects)
+
+    def get_ocr(self, video_id: str, keyframe_n: int | None = None) -> list[OCRRecord]:
+        with self._connect() as conn:
+            if keyframe_n is None:
+                rows = conn.execute(
+                    """SELECT video_id, frame_id, text, confidence
+                       FROM ocr WHERE video_id = ? ORDER BY frame_id, keyframe_n""",
+                    (video_id,),
+                ).fetchall()
+            else:
+                rows = conn.execute(
+                    """SELECT video_id, frame_id, text, confidence
+                       FROM ocr WHERE video_id = ? AND keyframe_n = ?
+                       ORDER BY frame_id""",
+                    (video_id, keyframe_n),
+                ).fetchall()
+        return [OCRRecord(**dict(row)) for row in rows]
+
+    def get_asr(self, video_id: str) -> list[ASRSegment]:
+        with self._connect() as conn:
+            rows = conn.execute(
+                """SELECT video_id, start_time, end_time, text
+                   FROM asr_segments WHERE video_id = ? ORDER BY start_time""",
+                (video_id,),
+            ).fetchall()
+        return [ASRSegment(**dict(row)) for row in rows]
+
+    def get_metadata(self, video_id: str) -> dict[str, Any] | None:
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT raw_json FROM metadata WHERE video_id = ?", (video_id,)
+            ).fetchone()
+        if row is None:
+            return None
+        try:
+            payload = json.loads(str(row["raw_json"]))
+        except json.JSONDecodeError:
+            return None
+        return payload if isinstance(payload, dict) else None
 
     def search_clip(self, vector: np.ndarray, top_k: int) -> list[dict[str, Any]]:
         if self.clip_index is None:
