@@ -14,8 +14,7 @@ list rather than pretending to reproduce the hidden semantic judge.
 from __future__ import annotations
 
 import re
-from collections.abc import Iterable, Sequence
-from typing import Any
+from typing import Any, Iterable, Sequence
 
 DEFAULT_KS = (1, 5, 20, 50, 100)
 
@@ -60,15 +59,15 @@ def trake_r_score(candidate: Any, ground_truth: dict[str, Any]) -> float:
     return correct / len(gt_events)
 
 
-def final_score(r_scores: Sequence[float], ks: Sequence[int] = DEFAULT_KS) -> dict[str, float]:
+def final_score(
+    r_scores: Sequence[float],
+    ks: Sequence[int] = DEFAULT_KS,
+) -> dict[str, float]:
     """Compute R@K as max R-Score in the first K predictions and their mean."""
     if not r_scores:
         return {f"R@{k}": 0.0 for k in ks} | {"FinalScore": 0.0}
     values = [float(score) for score in r_scores]
-    top_scores = {
-        f"R@{k}": max(values[:k], default=0.0)
-        for k in ks
-    }
+    top_scores = {f"R@{k}": max(values[:k], default=0.0) for k in ks}
     top_scores["FinalScore"] = sum(top_scores.values()) / len(top_scores)
     return top_scores
 
@@ -115,7 +114,10 @@ def _frame_interval(record: dict[str, Any]) -> tuple[int, int]:
 
 
 def _event_predictions(candidate: Any) -> dict[str, int]:
-    events = candidate.get("events", []) if isinstance(candidate, dict) else getattr(candidate, "events", [])
+    if isinstance(candidate, dict):
+        events = candidate.get("events", [])
+    else:
+        events = getattr(candidate, "events", [])
     output: dict[str, int] = {}
     for event in events:
         if isinstance(event, dict):
