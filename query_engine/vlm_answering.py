@@ -20,7 +20,9 @@ class TransformersImageAnswerExtractor:
         *,
         device: str = "auto",
         max_new_tokens: int = 64,
-        prompt_template: str = "Answer the question using only the image. Question: {question}",
+        prompt_template: str = (
+            "Answer the question using only the image. Question: {question}"
+        ),
     ) -> None:
         if not model_name.strip():
             raise ValueError("model_name must not be empty")
@@ -85,5 +87,7 @@ class TransformersImageAnswerExtractor:
                 max_new_tokens=self.max_new_tokens,
                 do_sample=False,
             )
-        answer = self._processor.batch_decode(output_ids, skip_special_tokens=True)[0].strip()
+        answer = self._processor.batch_decode(
+            output_ids, skip_special_tokens=True
+        )[0].strip()
         return AnswerResult(answer, None, "completed" if answer else "empty_answer")
