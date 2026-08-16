@@ -71,6 +71,18 @@ class LocalDataStore(DataStore):
             ).fetchone()
         return FrameRecord(**dict(row)) if row else None
 
+    def get_frame_by_id(self, video_id: str, frame_id: int) -> FrameRecord | None:
+        """Return the keyframe record whose original-video frame_id matches."""
+        with self._connect() as conn:
+            row = conn.execute(
+                """SELECT * FROM frames
+                   WHERE video_id = ? AND frame_id = ?
+                   ORDER BY keyframe_n
+                   LIMIT 1""",
+                (video_id, frame_id),
+            ).fetchone()
+        return FrameRecord(**dict(row)) if row else None
+
     def get_frames_in_range(
         self, video_id: str, start_frame: int, end_frame: int
     ) -> list[FrameRecord]:
