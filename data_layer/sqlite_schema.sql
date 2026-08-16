@@ -14,19 +14,24 @@ CREATE TABLE IF NOT EXISTS videos (
 
 CREATE TABLE IF NOT EXISTS frames (
     video_id TEXT NOT NULL,
+    keyframe_n INTEGER NOT NULL,
     frame_id INTEGER NOT NULL,
     timestamp REAL NOT NULL,
     path TEXT NOT NULL,
     is_keyframe INTEGER NOT NULL DEFAULT 0,
-    PRIMARY KEY (video_id, frame_id),
+    PRIMARY KEY (video_id, keyframe_n),
     FOREIGN KEY (video_id) REFERENCES videos(video_id)
 );
+
+CREATE INDEX IF NOT EXISTS idx_frames_video_frame_id
+    ON frames(video_id, frame_id);
 
 CREATE INDEX IF NOT EXISTS idx_frames_video_timestamp
     ON frames(video_id, timestamp);
 
 CREATE TABLE IF NOT EXISTS objects (
     video_id TEXT NOT NULL,
+    keyframe_n INTEGER NOT NULL,
     frame_id INTEGER NOT NULL,
     label TEXT NOT NULL,
     confidence REAL NOT NULL,
@@ -34,11 +39,14 @@ CREATE TABLE IF NOT EXISTS objects (
     y1 REAL NOT NULL,
     x2 REAL NOT NULL,
     y2 REAL NOT NULL,
-    FOREIGN KEY (video_id, frame_id) REFERENCES frames(video_id, frame_id)
+    FOREIGN KEY (video_id, keyframe_n) REFERENCES frames(video_id, keyframe_n)
 );
 
 CREATE INDEX IF NOT EXISTS idx_objects_video_frame
     ON objects(video_id, frame_id);
+
+CREATE INDEX IF NOT EXISTS idx_objects_video_keyframe
+    ON objects(video_id, keyframe_n);
 
 CREATE INDEX IF NOT EXISTS idx_objects_label
     ON objects(label);
@@ -51,10 +59,11 @@ CREATE TABLE IF NOT EXISTS metadata (
 
 CREATE TABLE IF NOT EXISTS ocr (
     video_id TEXT NOT NULL,
+    keyframe_n INTEGER NOT NULL,
     frame_id INTEGER NOT NULL,
     text TEXT NOT NULL,
     confidence REAL,
-    FOREIGN KEY (video_id, frame_id) REFERENCES frames(video_id, frame_id)
+    FOREIGN KEY (video_id, keyframe_n) REFERENCES frames(video_id, keyframe_n)
 );
 
 CREATE TABLE IF NOT EXISTS asr_segments (
