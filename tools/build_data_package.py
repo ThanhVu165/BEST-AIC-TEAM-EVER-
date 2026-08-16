@@ -102,13 +102,46 @@ def _find_artifact(directory: Path, n: str, frame_idx: str, suffix: str) -> Path
 
 
 def _object_items(payload: Any) -> list[dict[str, Any]]:
+    """Normalize official Faster R-CNN/OpenImages JSON into object records.
+
+    The supplied AIC object files use parallel arrays such as
+    ``detection_scores``, ``detection_class_names`` / ``detection_class_entities``
+    and ``detection_boxes``. Older/internal exports may instead use a list of
+    object dictionaries; both forms are accepted.
+    """
     if isinstance(payload, list):
         return [item for item in payload if isinstance(item, dict)]
-    if isinstance(payload, dict):
-        for key in ("objects", "detections", "predictions", "instances", "results"):
-            value = payload.get(key)
-            if isinstance(value, list):
-                return [item for item in value if isinstance(item, dict)]
+
+    if not isinstance(payload, dict):
+        return []
+
+    # Official AIC format: parallel detection arrays.
+    scores = payload.get("detection_scores")
+    boxes = payload.get("detection_boxes")
+    entities = payload.get("detection_class_entities")
+    names = payload.get("detection_class_names")
+    labels = payload.get("detection_class_labels")
+    if isinstance(scores, list) and isinstance(boxes, list):
+        label_values = entities if isinstance(entities, list) else names
+        if not isinstance(label_values, list):
+            label_values = labels if isinstance(labels, list) else []
+
+        n = min(len(scores), len(boxes))
+        records: list[dict[str, Any]] = []
+        for i in range(n):
+            label = label_values[i] if i < len(label_values) else None
+            records.append({
+                "label": label,
+                "confidence": scores[i],
+                "bbox": boxes[i],
+            })
+        return records
+
+    # Compatibility with list-based detection exports.
+    for key in ("objects", "detections", "predictions", "instances", "results"):
+        value = payload.get(key)
+        if isinstance(value, list):
+            return [item for item in value if isinstance(item, dict)]
     return []
 
 
