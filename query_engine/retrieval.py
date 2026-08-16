@@ -93,10 +93,7 @@ class ClipCandidateRetriever:
         reranked: list[RetrievalHit] = []
         for hit in hits:
             object_score = 0.0
-            try:
-                record = self.datastore.get_objects(hit.video_id, hit.frame_id)
-            except Exception:
-                record = None
+            record = self.datastore.get_objects(hit.video_id, hit.frame_id)
             if record is not None and query_tokens:
                 for detection in record.objects:
                     label_tokens = _tokens(detection.label)
