@@ -30,6 +30,7 @@ class FrameRecord(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     video_id: str
+    keyframe_n: int
     frame_id: int
     timestamp: float
     path: str
