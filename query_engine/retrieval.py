@@ -38,26 +38,22 @@ class ClipCandidateRetriever:
         *,
         frame_top_k: int = 200,
         video_top_k: int = 50,
-        max_frames_per_video: int = 3,
         object_weight: float = 0.10,
     ) -> None:
         if frame_top_k <= 0:
             raise ValueError("frame_top_k must be > 0")
         if video_top_k <= 0:
             raise ValueError("video_top_k must be > 0")
-        if max_frames_per_video <= 0:
-            raise ValueError("max_frames_per_video must be > 0")
         if not 0.0 <= object_weight < 1.0:
             raise ValueError("object_weight must be in [0, 1)")
         self.datastore = datastore
         self.embedder = embedder
         self.frame_top_k = frame_top_k
         self.video_top_k = video_top_k
-        self.max_frames_per_video = max_frames_per_video
         self.object_weight = object_weight
 
     def retrieve(self, query_text: str) -> list[RetrievalHit]:
-        """Return ranked frame hypotheses with inspectable score provenance."""
+        """Return frame hypotheses without collapsing multiple frames per video."""
         text = query_text.strip()
         if not text:
             raise ValueError("query_text must not be empty")
@@ -124,7 +120,8 @@ class ClipCandidateRetriever:
             )
         return self._rank_frames(reranked)
 
-    def _rank_frames(self, hits: list[RetrievalHit]) -> list[RetrievalHit]:
+    @staticmethod
+    def _rank_frames(hits: list[RetrievalHit]) -> list[RetrievalHit]:
         unique: dict[tuple[str, int], RetrievalHit] = {}
         for hit in hits:
             key = (hit.video_id, hit.frame_id)
@@ -132,18 +129,10 @@ class ClipCandidateRetriever:
             if previous is None or hit.score > previous.score:
                 unique[key] = hit
 
-        per_video: dict[str, int] = {}
-        ranked: list[RetrievalHit] = []
-        for hit in sorted(
+        return sorted(
             unique.values(),
             key=lambda item: (-item.score, item.video_id, item.frame_id),
-        ):
-            count = per_video.get(hit.video_id, 0)
-            if count >= self.max_frames_per_video:
-                continue
-            ranked.append(hit)
-            per_video[hit.video_id] = count + 1
-        return ranked
+        )
 
     @staticmethod
     def _normalize_hit(item: dict[str, Any]) -> RetrievalHit:
