@@ -1,0 +1,48 @@
+[build-system]
+requires = ["setuptools>=69", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "aic2026-video-retrieval"
+version = "0.1.0"
+description = "AIC 2026 Video Retrieval and Video Understanding system"
+requires-python = ">=3.10,<3.13"
+dependencies = [
+    "numpy>=1.26,<3",
+    "pydantic>=2.7,<3",
+]
+
+[project.optional-dependencies]
+ml = [
+    "torch>=2.3",
+    "torchvision>=0.18",
+    "transformers>=4.44",
+    "sentence-transformers>=3.0",
+    "faiss-cpu>=1.8",
+    "opencv-python>=4.9",
+]
+api = [
+    "fastapi>=0.112",
+    "uvicorn[standard]>=0.30",
+]
+ui = [
+    "streamlit>=1.37",
+    "requests>=2.32",
+]
+dev = [
+    "pytest>=8.3",
+    "ruff>=0.6",
+]
+all = [
+    "aic2026-video-retrieval[ml,api,ui,dev]",
+]
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+[tool.setuptools.packages.find]
+include = ["schemas*", "video_pipeline*", "query_engine*", "api*", "ui*"]
