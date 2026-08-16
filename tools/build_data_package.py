@@ -8,14 +8,8 @@ Expected input tree (relative to --data-root):
     mapping/map-keyframes/<video_id>.csv
     media_info/media-info/<video_id>.json
 
-Generated artifacts are intentionally kept outside git:
-    database/aic2026.sqlite
-    indexes/clip_vit_b32.faiss
-    indexes/clip_vit_b32.mapping.json
-
-The builder never changes the official input data. It creates deterministic
-records from the mapping CSV order, where each CLIP row maps to its source
-frame_idx.
+The repository stores this official data under ``data/raw``.  Generated
+artifacts are kept outside git in ``database/`` and ``indexes/``.
 """
 from __future__ import annotations
 
@@ -30,6 +24,7 @@ from typing import Any
 import numpy as np
 
 ROOT = Path(__file__).resolve().parents[1]
+DEFAULT_DATA_ROOT = ROOT / "data" / "raw"
 SCHEMA = ROOT / "data_layer" / "sqlite_schema.sql"
 
 
@@ -48,51 +43,38 @@ def _int(value: Any, default: int = 0) -> int:
 
 
 def _media_info(payload: Any) -> dict[str, Any]:
-    """Extract common ffprobe/OpenCV-style fields without assuming one JSON schema."""
     streams = payload.get("streams", []) if isinstance(payload, dict) else []
-    video_stream = next(
-        (s for s in streams if isinstance(s, dict) and s.get("codec_type") == "video"),
-        {},
-    )
+    video_stream = next((s for s in streams if isinstance(s, dict) and s.get("codec_type") == "video"), {})
     fmt = payload.get("format", {}) if isinstance(payload, dict) else {}
     if not isinstance(fmt, dict):
         fmt = {}
-
     fps_raw = video_stream.get("avg_frame_rate", video_stream.get("r_frame_rate", 0))
-    fps = 0.0
     if isinstance(fps_raw, str) and "/" in fps_raw:
         a, b = fps_raw.split("/", 1)
-        if _number(b) != 0:
-            fps = _number(a) / _number(b)
+        fps = _number(a) / _number(b) if _number(b) else 0.0
     else:
         fps = _number(fps_raw)
-
-    duration = _number(video_stream.get("duration", fmt.get("duration", 0)))
-    total_frames = _int(
-        video_stream.get(
-            "nb_frames",
-            video_stream.get("nb_read_frames", payload.get("total_frames", 0) if isinstance(payload, dict) else 0),
-        )
-    )
     return {
         "fps": fps,
         "width": _int(video_stream.get("width", payload.get("width", 0) if isinstance(payload, dict) else 0)),
         "height": _int(video_stream.get("height", payload.get("height", 0) if isinstance(payload, dict) else 0)),
-        "duration": duration,
-        "total_frames": total_frames,
+        "duration": _number(video_stream.get("duration", fmt.get("duration", 0))),
+        "total_frames": _int(video_stream.get("nb_frames", video_stream.get("nb_read_frames", 0))),
     }
 
 
-def _find_frame_file(directory: Path, n: str, frame_idx: str) -> Path | None:
-    files = list(directory.glob("*.jpg")) if directory.is_dir() else []
-    n_values = {str(int(n))} if n.lstrip("-").isdigit() else set()
-    frame_values = {str(int(frame_idx))} if frame_idx.lstrip("-").isdigit() else set()
+def _find_artifact(directory: Path, n: str, frame_idx: str, suffix: str) -> Path | None:
+    files = list(directory.glob(f"*.{suffix}")) if directory.is_dir() else []
+    values = set()
+    for value in (n, frame_idx):
+        if value.lstrip("-").isdigit():
+            values.add(str(int(value)))
     for path in files:
         stem = path.stem
-        if stem.isdigit() and str(int(stem)) in n_values | frame_values:
+        if stem.isdigit() and str(int(stem)) in values:
             return path
         tokens = {str(int(x)) for x in re.findall(r"\d+", stem)}
-        if tokens & (n_values | frame_values):
+        if tokens & values:
             return path
     return None
 
@@ -129,6 +111,9 @@ def _load_mapping(path: Path) -> list[dict[str, str]]:
 
 
 def build(data_root: Path, db_path: Path, index_path: Path, mapping_out: Path) -> None:
+    if not data_root.is_dir():
+        raise FileNotFoundError(f"AIC data root does not exist: {data_root}")
+
     clip_root = data_root / "clip" / "clip-features-32"
     mapping_root = data_root / "mapping" / "map-keyframes"
     keyframe_root = data_root / "keyframes" / "keyframes"
@@ -156,12 +141,8 @@ def build(data_root: Path, db_path: Path, index_path: Path, mapping_out: Path) -
     with sqlite3.connect(db_path) as conn:
         conn.execute("PRAGMA foreign_keys = ON")
         conn.executescript(SCHEMA.read_text(encoding="utf-8"))
-        conn.execute("DELETE FROM asr_segments")
-        conn.execute("DELETE FROM ocr")
-        conn.execute("DELETE FROM metadata")
-        conn.execute("DELETE FROM objects")
-        conn.execute("DELETE FROM frames")
-        conn.execute("DELETE FROM videos")
+        for table in ("asr_segments", "ocr", "metadata", "objects", "frames", "videos"):
+            conn.execute(f"DELETE FROM {table}")
 
         for video_id in ids:
             clip = np.load(clip_files[video_id], mmap_mode="r")
@@ -180,44 +161,30 @@ def build(data_root: Path, db_path: Path, index_path: Path, mapping_out: Path) -
             video_path = video_files.get(video_id)
             if video_path is None:
                 raise FileNotFoundError(f"{video_id}: video file not found")
-            try:
-                stored_video_path = video_path.relative_to(ROOT).as_posix()
-            except ValueError:
-                stored_video_path = video_path.as_posix()
+            stored_video_path = video_path.relative_to(ROOT).as_posix() if video_path.is_relative_to(ROOT) else video_path.as_posix()
 
             conn.execute(
                 """INSERT INTO videos(video_id,path,fps,width,height,duration,total_frames,batch_id,metadata_available)
                    VALUES(?,?,?,?,?,?,?,?,?)""",
-                (video_id, stored_video_path, media["fps"], media["width"], media["height"],
-                 media["duration"], media["total_frames"], None, int(video_id.startswith("L"))),
+                (video_id, stored_video_path, media["fps"], media["width"], media["height"], media["duration"], media["total_frames"], None, int(bool(media_payload))),
             )
             if media_payload:
-                conn.execute(
-                    "INSERT INTO metadata(video_id,raw_json) VALUES(?,?)",
-                    (video_id, json.dumps(media_payload, ensure_ascii=False)),
-                )
+                conn.execute("INSERT INTO metadata(video_id,raw_json) VALUES(?,?)", (video_id, json.dumps(media_payload, ensure_ascii=False)))
 
             frame_dir = keyframe_root / video_id
             object_dir = object_root / video_id
-            for row_idx, row in enumerate(rows):
+            for row in rows:
                 frame_id = int(row["frame_idx"])
-                timestamp = float(row["pts_time"])
-                frame_path = _find_frame_file(frame_dir, row["n"], row["frame_idx"])
+                frame_path = _find_artifact(frame_dir, row["n"], row["frame_idx"], "jpg")
                 if frame_path is None:
                     raise FileNotFoundError(f"{video_id}: keyframe missing for frame_idx={frame_id}")
-                try:
-                    stored_frame_path = frame_path.relative_to(ROOT).as_posix()
-                except ValueError:
-                    stored_frame_path = frame_path.as_posix()
+                stored_frame_path = frame_path.relative_to(ROOT).as_posix() if frame_path.is_relative_to(ROOT) else frame_path.as_posix()
                 conn.execute(
                     "INSERT INTO frames(video_id,frame_id,timestamp,path,is_keyframe) VALUES(?,?,?,?,1)",
-                    (video_id, frame_id, timestamp, stored_frame_path),
+                    (video_id, frame_id, float(row["pts_time"]), stored_frame_path),
                 )
 
-                object_path = None
-                if object_dir.is_dir():
-                    candidates = [p for p in object_dir.glob("*.json") if p.stem == frame_path.stem]
-                    object_path = candidates[0] if candidates else _find_frame_file(object_dir, row["n"], row["frame_idx"])
+                object_path = _find_artifact(object_dir, row["n"], row["frame_idx"], "json")
                 if object_path is not None:
                     payload = json.loads(object_path.read_text(encoding="utf-8"))
                     for item in _object_items(payload):
@@ -230,12 +197,10 @@ def build(data_root: Path, db_path: Path, index_path: Path, mapping_out: Path) -
                                VALUES(?,?,?,?,?,?,?,?)""",
                             (video_id, frame_id, label, confidence, *bbox),
                         )
-
                 rows_for_index.append({"video_id": video_id, "frame_id": frame_id})
 
             if dimension is None:
                 dimension = int(clip.shape[1])
-
         conn.commit()
 
     matrix = np.empty((len(rows_for_index), dimension or 512), dtype=np.float32)
@@ -245,15 +210,18 @@ def build(data_root: Path, db_path: Path, index_path: Path, mapping_out: Path) -
         count = clip.shape[0]
         matrix[cursor : cursor + count] = np.asarray(clip, dtype=np.float32)
         cursor += count
+    import faiss  # type: ignore
     faiss.normalize_L2(matrix)
     index = faiss.IndexFlatIP(matrix.shape[1])
     index.add(matrix)
     faiss.write_index(index, str(index_path))
     mapping_out.write_text(json.dumps(rows_for_index, ensure_ascii=False, indent=2), encoding="utf-8")
 
+    with sqlite3.connect(db_path) as check:
+        object_count = check.execute("SELECT COUNT(*) FROM objects").fetchone()[0]
     print(f"videos={len(ids)}")
     print(f"frames={len(rows_for_index)}")
-    print(f"objects={sqlite3.connect(db_path).execute('SELECT COUNT(*) FROM objects').fetchone()[0]}")
+    print(f"objects={object_count}")
     print(f"faiss_vectors={index.ntotal}")
     print(f"db={db_path}")
     print(f"index={index_path}")
@@ -262,7 +230,7 @@ def build(data_root: Path, db_path: Path, index_path: Path, mapping_out: Path) -
 
 def main() -> int:
     parser = argparse.ArgumentParser(description="Build local AIC2026 SQLite + FAISS artifacts")
-    parser.add_argument("--data-root", type=Path, default=ROOT / "data")
+    parser.add_argument("--data-root", type=Path, default=DEFAULT_DATA_ROOT)
     parser.add_argument("--db", type=Path, default=ROOT / "database" / "aic2026.sqlite")
     parser.add_argument("--index", type=Path, default=ROOT / "indexes" / "clip_vit_b32.faiss")
     parser.add_argument("--mapping", type=Path, default=ROOT / "indexes" / "clip_vit_b32.mapping.json")
