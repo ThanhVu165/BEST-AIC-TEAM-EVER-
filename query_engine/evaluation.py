@@ -1,7 +1,7 @@
 from __future__ import annotations
 
-from typing import Any, Iterable, Sequence
-
+from collections.abc import Iterable, Sequence
+from typing import Any
 
 DEFAULT_KS = (1, 5, 20, 50, 100)
 
@@ -18,9 +18,7 @@ def recall_at_k(
     if not relevant:
         raise ValueError("relevant_video_ids must not be empty")
 
-    return float(
-        any(_video_id(candidate) in relevant for candidate in ranked_candidates[:k])
-    )
+    return float(any(_video_id(candidate) in relevant for candidate in ranked_candidates[:k]))
 
 
 def recall_at_ks(
