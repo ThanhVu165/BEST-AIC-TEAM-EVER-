@@ -44,6 +44,8 @@ def _build_engine() -> BaselineQueryEngine | MockQueryEngine:
         mapping_path=Path(mapping_path),
         model_name=os.getenv("AIC_CLIP_MODEL", "openai/clip-vit-base-patch32"),
         device=os.getenv("AIC_DEVICE", "auto"),
+        vlm_model_name=os.getenv("AIC_VLM_MODEL") or None,
+        vlm_device=os.getenv("AIC_VLM_DEVICE") or None,
     )
 
 
