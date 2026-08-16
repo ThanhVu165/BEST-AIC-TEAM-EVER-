@@ -1,4 +1,4 @@
-"""FAISS adapter with explicit internal-id -> source-frame mapping."""
+"""FAISS adapter with explicit internal-id -> keyframe/source-frame mapping."""
 from __future__ import annotations
 
 import json
@@ -37,10 +37,12 @@ class FAISSFrameStore:
         for internal_id, item in enumerate(self.mapping):
             if not isinstance(item, dict):
                 raise TypeError(f"Mapping entry {internal_id} is not an object")
-            if "video_id" not in item or "frame_id" not in item:
+            required = {"video_id", "keyframe_n", "frame_id"}
+            if required - set(item):
                 raise ValueError(
-                    f"Mapping entry {internal_id} must contain video_id and frame_id"
+                    f"Mapping entry {internal_id} must contain {sorted(required)}"
                 )
+            int(item["keyframe_n"])
             int(item["frame_id"])
 
     def search(self, vector: np.ndarray, top_k: int) -> list[dict[str, Any]]:
