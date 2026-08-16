@@ -25,24 +25,15 @@ def _numeric_tokens(stem: str) -> set[str]:
 
 
 def _match_frame_files(rows: list[dict[str, str]], files: set[str]) -> tuple[bool, str]:
-    """Check frame/object filenames against mapping rows without assuming one naming scheme.
-
-    BTC-derived artifacts may use the sequential mapping number (``n``), the source
-    frame number (``frame_idx``), or a filename containing either value. The old
-    audit assumed ``n`` and therefore reported ``missing=N extra=N`` even when the
-    artifact count was exactly correct.
-    """
+    """Check frame/object filenames against mapping rows without assuming one naming scheme."""
     if len(files) != len(rows):
         return False, "count-mismatch"
 
     normalized_files = {_normalized_stem(stem) for stem in files}
-
-    # Direct numeric stems: 1.jpg, 001.jpg, 000001.jpg, ...
     n_values = {_normalized_stem(row["n"]) for row in rows if row.get("n", "").isdigit()}
     if n_values == normalized_files:
         return True, "n"
 
-    # Source frame stems: 1532.jpg, 0001532.jpg, ...
     frame_values = {
         _normalized_stem(row["frame_idx"])
         for row in rows
@@ -51,7 +42,6 @@ def _match_frame_files(rows: list[dict[str, str]], files: set[str]) -> tuple[boo
     if frame_values == normalized_files:
         return True, "frame_idx"
 
-    # Prefixed filenames such as frame_1532.jpg or L26_V001_1532.jpg.
     for field, values in (("n", n_values), ("frame_idx", frame_values)):
         matched = sum(bool(_numeric_tokens(stem) & values) for stem in files)
         if matched == len(files):
@@ -61,6 +51,12 @@ def _match_frame_files(rows: list[dict[str, str]], files: set[str]) -> tuple[boo
 
 
 def audit(data_root: Path, verbose: bool = False, max_errors: int = 20) -> int:
+    """Audit one AIC data root.
+
+    The repository keeps the official competition data under ``data/raw``.  The
+    function also accepts a raw-data directory directly so the command remains
+    usable with an external dataset copy.
+    """
     clip_root = data_root / "clip" / "clip-features-32"
     mapping_root = data_root / "mapping" / "map-keyframes"
     keyframe_root = data_root / "keyframes" / "keyframes"
@@ -115,10 +111,7 @@ def audit(data_root: Path, verbose: bool = False, max_errors: int = 20) -> int:
         actual_n: list[int] = []
         for row in rows:
             try:
-                actual_n.append(int(row["n"]))
-                float(row["pts_time"])
-                float(row["fps"])
-                int(row["frame_idx"])
+                actual_n.append(int(row["n"])); float(row["pts_time"]); float(row["fps"]); int(row["frame_idx"])
             except Exception as exc:
                 errors.append(f"{video_id}: malformed mapping row: {exc}")
         if actual_n != list(range(1, len(rows) + 1)):
@@ -141,6 +134,11 @@ def audit(data_root: Path, verbose: bool = False, max_errors: int = 20) -> int:
 
         if video_id not in media_files:
             errors.append(f"{video_id}: missing media_info")
+
+    # Empty input is never a valid audit result. This prevents the previous
+    # "0 files / 0 errors / PASS" false positive.
+    if not ids:
+        errors.append(f"no AIC dataset artifacts found below {data_root}")
 
     if set(clip_files) != set(mapping_files):
         errors.append(f"video ID mismatch CLIP↔mapping: {len(set(clip_files) ^ set(mapping_files))} IDs")
