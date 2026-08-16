@@ -19,7 +19,7 @@ class DataStore(ABC):
         raise NotImplementedError
 
     @abstractmethod
-    def get_frame(self, video_id: str, frame_id: int) -> FrameRecord | None:
+    def get_frame(self, video_id: str, keyframe_n: int) -> FrameRecord | None:
         raise NotImplementedError
 
     @abstractmethod
@@ -29,7 +29,7 @@ class DataStore(ABC):
         raise NotImplementedError
 
     @abstractmethod
-    def get_objects(self, video_id: str, frame_id: int) -> ObjectRecord | None:
+    def get_objects(self, video_id: str, keyframe_n: int) -> ObjectRecord | None:
         raise NotImplementedError
 
     @abstractmethod
@@ -58,11 +58,11 @@ class LocalDataStore(DataStore):
             ).fetchone()
         return VideoRecord(**dict(row)) if row else None
 
-    def get_frame(self, video_id: str, frame_id: int) -> FrameRecord | None:
+    def get_frame(self, video_id: str, keyframe_n: int) -> FrameRecord | None:
         with self._connect() as conn:
             row = conn.execute(
-                "SELECT * FROM frames WHERE video_id = ? AND frame_id = ?",
-                (video_id, frame_id),
+                "SELECT * FROM frames WHERE video_id = ? AND keyframe_n = ?",
+                (video_id, keyframe_n),
             ).fetchone()
         return FrameRecord(**dict(row)) if row else None
 
@@ -75,20 +75,21 @@ class LocalDataStore(DataStore):
             rows = conn.execute(
                 """SELECT * FROM frames
                    WHERE video_id = ? AND frame_id BETWEEN ? AND ?
-                   ORDER BY frame_id""",
+                   ORDER BY frame_id, keyframe_n""",
                 (video_id, start_frame, end_frame),
             ).fetchall()
         return [FrameRecord(**dict(row)) for row in rows]
 
-    def get_objects(self, video_id: str, frame_id: int) -> ObjectRecord | None:
+    def get_objects(self, video_id: str, keyframe_n: int) -> ObjectRecord | None:
         with self._connect() as conn:
             rows = conn.execute(
-                """SELECT label, confidence, x1, y1, x2, y2
-                   FROM objects WHERE video_id = ? AND frame_id = ?""",
-                (video_id, frame_id),
+                """SELECT frame_id, label, confidence, x1, y1, x2, y2
+                   FROM objects WHERE video_id = ? AND keyframe_n = ?""",
+                (video_id, keyframe_n),
             ).fetchall()
         if not rows:
             return None
+        frame_id = int(rows[0]["frame_id"])
         objects = [
             {
                 "label": row["label"],
