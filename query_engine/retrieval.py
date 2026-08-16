@@ -1,19 +1,7 @@
-"""Baseline candidate retrieval for the AIC 2026 Query Engine.
-
-This module contains query-side orchestration only. It consumes the shared
-``DataStore`` interface and never accesses SQLite/FAISS implementation details.
-
-Two retrieval views are intentionally kept separate:
-
-* frame retrieval is needed by KIS because a correct video can contain many
-  visually similar frames and the first frame hit is not necessarily inside
-  the ground-truth event interval;
-* video aggregation is needed for QA/TRAKE candidate generation.
-
-This separation avoids throwing away useful frame hypotheses too early.
-"""
+"""Candidate retrieval and optional auxiliary object-evidence reranking."""
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 from typing import Any, Protocol
 
@@ -36,10 +24,12 @@ class RetrievalHit:
     score: float
     faiss_id: int | None = None
     sources: tuple[str, ...] = ("clip",)
+    object_score: float = 0.0
+    retrieval_score: float | None = None
 
 
 class ClipCandidateRetriever:
-    """Retrieve CLIP frame hits and expose frame/video ranked hypotheses."""
+    """Retrieve frame hypotheses and optionally fuse object evidence."""
 
     def __init__(
         self,
@@ -49,6 +39,7 @@ class ClipCandidateRetriever:
         frame_top_k: int = 200,
         video_top_k: int = 50,
         max_frames_per_video: int = 3,
+        object_weight: float = 0.10,
     ) -> None:
         if frame_top_k <= 0:
             raise ValueError("frame_top_k must be > 0")
@@ -56,18 +47,17 @@ class ClipCandidateRetriever:
             raise ValueError("video_top_k must be > 0")
         if max_frames_per_video <= 0:
             raise ValueError("max_frames_per_video must be > 0")
+        if not 0.0 <= object_weight < 1.0:
+            raise ValueError("object_weight must be in [0, 1)")
         self.datastore = datastore
         self.embedder = embedder
         self.frame_top_k = frame_top_k
         self.video_top_k = video_top_k
         self.max_frames_per_video = max_frames_per_video
+        self.object_weight = object_weight
 
     def retrieve(self, query_text: str) -> list[RetrievalHit]:
-        """Return globally ranked frame hypotheses.
-
-        Exact duplicate ``(video_id, frame_id)`` hits are removed, but multiple
-        frames from the same video are deliberately retained for KIS.
-        """
+        """Return ranked frame hypotheses with inspectable score provenance."""
         text = query_text.strip()
         if not text:
             raise ValueError("query_text must not be empty")
@@ -75,10 +65,9 @@ class ClipCandidateRetriever:
         vector = np.asarray(self.embedder.encode(text), dtype=np.float32)
         if vector.ndim != 1 or vector.size == 0:
             raise ValueError("embedder must return a non-empty 1D vector")
-
         raw_hits = self.datastore.search_clip(vector, self.frame_top_k)
         frame_hits = [self._normalize_hit(item) for item in raw_hits]
-        return self._rank_frames(frame_hits)
+        return self._rerank_with_objects(frame_hits, text)
 
     def retrieve_videos(self, query_text: str) -> list[RetrievalHit]:
         """Aggregate frame evidence into one strongest hypothesis per video."""
@@ -89,8 +78,53 @@ class ClipCandidateRetriever:
             if previous is None or hit.score > previous.score:
                 best[hit.video_id] = hit
 
-        ranked = sorted(best.values(), key=lambda item: item.score, reverse=True)
+        ranked = sorted(
+            best.values(),
+            key=lambda item: (-item.score, item.video_id, item.frame_id),
+        )
         return ranked[: self.video_top_k]
+
+    def _rerank_with_objects(
+        self,
+        hits: list[RetrievalHit],
+        query_text: str,
+    ) -> list[RetrievalHit]:
+        query_tokens = _tokens(query_text)
+        reranked: list[RetrievalHit] = []
+        for hit in hits:
+            object_score = 0.0
+            try:
+                record = self.datastore.get_objects(hit.video_id, hit.frame_id)
+            except Exception:
+                record = None
+            if record is not None and query_tokens:
+                for detection in record.objects:
+                    label_tokens = _tokens(detection.label)
+                    if label_tokens and label_tokens.issubset(query_tokens):
+                        object_score = max(object_score, float(detection.confidence))
+
+            retrieval_score = hit.retrieval_score
+            if retrieval_score is None:
+                retrieval_score = hit.score
+            fused = (
+                (1.0 - self.object_weight) * retrieval_score
+                + self.object_weight * object_score
+            )
+            sources = list(hit.sources)
+            if object_score > 0.0:
+                sources.append("objects")
+            reranked.append(
+                RetrievalHit(
+                    video_id=hit.video_id,
+                    frame_id=hit.frame_id,
+                    score=fused,
+                    faiss_id=hit.faiss_id,
+                    sources=tuple(sources),
+                    object_score=object_score,
+                    retrieval_score=retrieval_score,
+                )
+            )
+        return self._rank_frames(reranked)
 
     def _rank_frames(self, hits: list[RetrievalHit]) -> list[RetrievalHit]:
         unique: dict[tuple[str, int], RetrievalHit] = {}
@@ -102,7 +136,10 @@ class ClipCandidateRetriever:
 
         per_video: dict[str, int] = {}
         ranked: list[RetrievalHit] = []
-        for hit in sorted(unique.values(), key=lambda item: item.score, reverse=True):
+        for hit in sorted(
+            unique.values(),
+            key=lambda item: (-item.score, item.video_id, item.frame_id),
+        ):
             count = per_video.get(hit.video_id, 0)
             if count >= self.max_frames_per_video:
                 continue
@@ -127,4 +164,13 @@ class ClipCandidateRetriever:
             frame_id=frame_id,
             score=score,
             faiss_id=faiss_id,
+            retrieval_score=score,
         )
+
+
+def _tokens(text: str) -> set[str]:
+    return {
+        token
+        for token in re.findall(r"[\w-]+", text.casefold())
+        if len(token) > 1
+    }
