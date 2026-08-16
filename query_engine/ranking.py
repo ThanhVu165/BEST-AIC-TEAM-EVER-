@@ -14,12 +14,11 @@ class RankingEvidence:
 
     @property
     def fused_score(self) -> float:
-        # Keep the baseline interpretable. Auxiliary signals are optional and
-        # cannot overwhelm the primary cross-modal retrieval evidence.
+        """Fuse optional auxiliary evidence without overriding retrieval."""
         return (
-            0.70 * self.retrieval_score
-            + 0.20 * self.object_score
-            + 0.10 * self.metadata_score
+            0.92 * self.retrieval_score
+            + 0.06 * self.object_score
+            + 0.02 * self.metadata_score
         )
 
 
