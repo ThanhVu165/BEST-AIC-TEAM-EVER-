@@ -6,22 +6,22 @@ from typing import Any
 
 from schemas import Candidate, QACandidate, QueryRequest, SearchResponse, TRAKECandidate
 
+from .answering import AnswerExtractor, UnavailableAnswerExtractor
 from .interfaces import QueryEngine
 from .retrieval import ClipCandidateRetriever, RetrievalHit
 from .temporal import FrameEvidence, select_semantic_keyframes
 
 
 class BaselineQueryEngine(QueryEngine):
-    """Run CLIP retrieval and deterministic evidence-aware task solvers.
+    """Run CLIP retrieval and deterministic evidence-aware task solvers."""
 
-    The current temporal stage is explicitly a retrieval proxy. It preserves
-    source frame IDs and never invents an event boundary. A learned temporal
-    model can later replace ``select_semantic_keyframes`` without changing the
-    API contract.
-    """
-
-    def __init__(self, retriever: ClipCandidateRetriever) -> None:
+    def __init__(
+        self,
+        retriever: ClipCandidateRetriever,
+        answer_extractor: AnswerExtractor | None = None,
+    ) -> None:
         self.retriever = retriever
+        self.answer_extractor = answer_extractor or UnavailableAnswerExtractor()
 
     def search(self, request: QueryRequest) -> SearchResponse:
         task = request.task or self._infer_task(request)
@@ -51,8 +51,9 @@ class BaselineQueryEngine(QueryEngine):
     def _solve_kis(self, request: QueryRequest) -> list[dict[str, Any]]:
         query_text = self._build_query_text(request, "KIS")
         hits = self.retriever.retrieve(query_text)
-        evidence = [self._frame_evidence(hit) for hit in hits]
-        selected = select_semantic_keyframes(evidence, max_candidates=100)
+        selected = select_semantic_keyframes(
+            [self._frame_evidence(hit) for hit in hits], max_candidates=100
+        )
         return [
             Candidate(
                 rank=item.rank,
@@ -71,19 +72,38 @@ class BaselineQueryEngine(QueryEngine):
         hits = self.retriever.retrieve_videos(query_text)
         candidates: list[dict[str, Any]] = []
         for rank, hit in enumerate(hits, start=1):
+            frame = self._frame_record(hit)
+            answer = ""
+            status = "evidence_unavailable"
+            confidence = None
+            if frame is not None:
+                result = self.answer_extractor.answer(
+                    __import__("query_engine.answering", fromlist=["AnswerEvidence"]).AnswerEvidence(
+                        video_id=hit.video_id,
+                        frame_id=hit.frame_id,
+                        frame_path=frame.path,
+                        question=request.question or query_text,
+                    )
+                )
+                answer = result.answer
+                status = result.status
+                confidence = result.confidence
+            evidence = {
+                "sources": ["clip", "temporal_proxy"],
+                "answer_status": status,
+            }
+            if confidence is not None:
+                evidence["answer_confidence"] = confidence
             candidates.append(
                 QACandidate(
                     rank=rank,
                     video_id=hit.video_id,
                     frame_id=hit.frame_id,
                     score=hit.score,
-                    answer="",
+                    answer=answer,
                     retrieval_score=hit.score,
                     temporal_score=hit.score,
-                    evidence={
-                        "sources": ["clip", "temporal_proxy"],
-                        "answer_status": "not_generated",
-                    },
+                    evidence=evidence,
                 ).model_dump()
             )
         return candidates[:100]
@@ -99,9 +119,6 @@ class BaselineQueryEngine(QueryEngine):
                 raise ValueError(f"event {event.event_id!r} has empty description")
             per_event[event.event_id] = self.retriever.retrieve(description)
 
-        # Candidate videos are the union of per-event retrievals. A candidate is
-        # emitted only when every event has evidence in that same video; this
-        # avoids fabricating frames for missing events.
         video_scores: dict[str, list[float]] = defaultdict(list)
         for hits in per_event.values():
             best_by_video: dict[str, float] = {}
@@ -125,8 +142,7 @@ class BaselineQueryEngine(QueryEngine):
             for event in request.events:
                 hits = [hit for hit in per_event[event.event_id] if hit.video_id == video_id]
                 selected = select_semantic_keyframes(
-                    [self._frame_evidence(hit) for hit in hits],
-                    max_candidates=1,
+                    [self._frame_evidence(hit) for hit in hits], max_candidates=1
                 )
                 if not selected:
                     break
@@ -150,20 +166,18 @@ class BaselineQueryEngine(QueryEngine):
             )
         return results
 
-    def _frame_evidence(self, hit: RetrievalHit) -> FrameEvidence:
-        timestamp = None
+    def _frame_record(self, hit: RetrievalHit):
         try:
-            frame = self.retriever.datastore.get_frame(hit.video_id, hit.frame_id)
-            if frame is not None:
-                timestamp = frame.timestamp
+            return self.retriever.datastore.get_frame(hit.video_id, hit.frame_id)
         except Exception:
-            # Temporal metadata is auxiliary; retrieval must remain usable when
-            # an older or partial SQLite package lacks the frame table.
-            timestamp = None
+            return None
+
+    def _frame_evidence(self, hit: RetrievalHit) -> FrameEvidence:
+        frame = self._frame_record(hit)
         return FrameEvidence(
             video_id=hit.video_id,
             frame_id=hit.frame_id,
-            timestamp=timestamp,
+            timestamp=frame.timestamp if frame is not None else None,
             retrieval_score=hit.score,
         )
 
