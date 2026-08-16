@@ -64,18 +64,40 @@ def _media_info(payload: Any) -> dict[str, Any]:
 
 
 def _find_artifact(directory: Path, n: str, frame_idx: str, suffix: str) -> Path | None:
+    """Resolve an official keyframe/object file, preferring keyframe n.
+
+    BTC defines keyframe filenames by their keyframe order, while frame_idx is
+    the original video position and may legitimately repeat in the metadata.
+    """
     files = list(directory.glob(f"*.{suffix}")) if directory.is_dir() else []
-    values = set()
-    for value in (n, frame_idx):
-        if value.lstrip("-").isdigit():
-            values.add(str(int(value)))
+    if not files:
+        return None
+
+    n_value = str(int(n)) if n.lstrip("-").isdigit() else n.strip()
     for path in files:
         stem = path.stem
-        if stem.isdigit() and str(int(stem)) in values:
+        if stem.isdigit() and str(int(stem)) == n_value:
             return path
-        tokens = {str(int(x)) for x in re.findall(r"\d+", stem)}
-        if tokens & values:
+
+    # Fallback for non-standard filenames containing the keyframe number.
+    for path in files:
+        tokens = {str(int(x)) for x in re.findall(r"\d+", path.stem)}
+        if n_value in tokens:
             return path
+
+    # Last resort: use source frame index only when the keyframe number cannot
+    # identify a file. This is intentionally after the n-based lookup because
+    # frame_idx is not guaranteed to be unique.
+    if frame_idx.lstrip("-").isdigit():
+        frame_value = str(int(frame_idx))
+        for path in files:
+            stem = path.stem
+            if stem.isdigit() and str(int(stem)) == frame_value:
+                return path
+        for path in files:
+            tokens = {str(int(x)) for x in re.findall(r"\d+", path.stem)}
+            if frame_value in tokens:
+                return path
     return None
 
 
