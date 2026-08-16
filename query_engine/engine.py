@@ -181,7 +181,10 @@ class BaselineQueryEngine(QueryEngine):
         }
 
     def _frame_record(self, hit: RetrievalHit):
-        return self.retriever.datastore.get_frame(hit.video_id, hit.frame_id)
+        getter = getattr(self.retriever.datastore, "get_frame", None)
+        if getter is None:
+            return None
+        return getter(hit.video_id, hit.frame_id)
 
     def _frame_evidence(self, hit: RetrievalHit) -> FrameEvidence:
         frame = self._frame_record(hit)
