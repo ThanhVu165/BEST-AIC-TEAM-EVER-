@@ -28,7 +28,7 @@ class FAISSFrameStore:
         self.index = faiss.read_index(str(self.index_path))
         payload = json.loads(self.mapping_path.read_text(encoding="utf-8"))
         if not isinstance(payload, list):
-            raise ValueError("FAISS mapping must be a JSON list")
+            raise TypeError("FAISS mapping must be a JSON list")
         self.mapping = payload
         if len(self.mapping) != self.index.ntotal:
             raise ValueError(
@@ -36,7 +36,7 @@ class FAISSFrameStore:
             )
         for internal_id, item in enumerate(self.mapping):
             if not isinstance(item, dict):
-                raise ValueError(f"Mapping entry {internal_id} is not an object")
+                raise TypeError(f"Mapping entry {internal_id} is not an object")
             if "video_id" not in item or "frame_id" not in item:
                 raise ValueError(
                     f"Mapping entry {internal_id} must contain video_id and frame_id"
