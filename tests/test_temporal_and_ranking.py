@@ -4,9 +4,9 @@ from query_engine.temporal import FrameEvidence, select_semantic_keyframes
 
 def test_temporal_selection_preserves_source_frame_identity():
     frames = [
-        FrameEvidence("v2", 17, 1.7, 0.4),
-        FrameEvidence("v1", 99, 9.9, 0.9),
-        FrameEvidence("v1", 12, 1.2, 0.9),
+        FrameEvidence("v2", 17, None, 1.7, 0.4),
+        FrameEvidence("v1", 99, None, 9.9, 0.9),
+        FrameEvidence("v1", 12, None, 1.2, 0.9),
     ]
     result = select_semantic_keyframes(frames)
 
@@ -19,7 +19,7 @@ def test_temporal_selection_preserves_source_frame_identity():
 
 
 def test_temporal_selection_has_explicit_candidate_limit():
-    frames = [FrameEvidence("v", i, float(i), 1.0) for i in range(10)]
+    frames = [FrameEvidence("v", i, None, float(i), 1.0) for i in range(10)]
     result = select_semantic_keyframes(frames, max_candidates=3)
     assert len(result) == 3
 
