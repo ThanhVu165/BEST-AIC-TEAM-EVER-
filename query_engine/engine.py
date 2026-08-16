@@ -54,9 +54,6 @@ class BaselineQueryEngine(QueryEngine):
             [self._frame_evidence(hit) for hit in hits], max_candidates=100
         )
 
-        # Official retrieval hits normally carry keyframe_n. Keep a frame-id
-        # fallback so KIS does not discard an otherwise valid hypothesis when a
-        # datastore/test double only exposes the source frame identity.
         by_keyframe = {
             (hit.video_id, hit.keyframe_n): hit
             for hit in hits
@@ -146,19 +143,25 @@ class BaselineQueryEngine(QueryEngine):
             best_scores: list[float] = []
             complete = True
             for event in request.events:
-                hits = [hit for hit in per_event[event.event_id] if hit.video_id == video_id]
+                hits = [
+                    hit
+                    for hit in per_event[event.event_id]
+                    if hit.video_id == video_id
+                ]
                 if not hits:
                     complete = False
                     break
                 event_hits[event.event_id] = hits
                 best_scores.append(max(hit.score for hit in hits))
             if complete:
-                scored_videos.append((video_id, sum(best_scores) / len(best_scores), event_hits))
+                scored_videos.append(
+                    (video_id, sum(best_scores) / len(best_scores), event_hits)
+                )
 
         scored_videos.sort(key=lambda item: (-item[1], item[0]))
 
         results: list[dict[str, Any]] = []
-        for video_id, video_score, event_hits in scored_videos[:100]:
+        for video_id, _, event_hits in scored_videos[:100]:
             ordered_inputs = [
                 [self._frame_evidence(hit) for hit in event_hits[event.event_id]]
                 for event in request.events
@@ -179,12 +182,15 @@ class BaselineQueryEngine(QueryEngine):
                 }
                 for idx, event in enumerate(request.events)
             ]
+            aligned_score = sum(item["score"] for item in event_predictions) / len(
+                event_predictions
+            )
             results.append(
                 TRAKECandidate(
                     rank=len(results) + 1,
                     video_id=video_id,
                     events=event_predictions,
-                    score=video_score,
+                    score=aligned_score,
                 ).model_dump()
             )
         return results
@@ -232,7 +238,7 @@ class BaselineQueryEngine(QueryEngine):
             parts.append(request.raw_text.strip())
         if task == "QA" and request.question:
             parts.append(request.question.strip())
-        text = " ".join(part for part in parts if part)
+        text = " ".join(dict.fromkeys(part for part in parts if part))
         if not text:
             raise ValueError("query request contains no searchable text")
         return text
