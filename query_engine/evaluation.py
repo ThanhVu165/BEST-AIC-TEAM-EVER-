@@ -1,25 +1,65 @@
 from __future__ import annotations
 
-from collections.abc import Iterable
+from collections.abc import Iterable, Sequence
+from typing import Any
+
+
+DEFAULT_KS = (1, 5, 20, 50, 100)
 
 
 def recall_at_k(
-    ranked_video_ids: Iterable[str],
-    relevant_video_ids: set[str],
+    ranked_candidates: Sequence[Any],
+    relevant_video_ids: Iterable[str],
     k: int,
 ) -> float:
     """Return binary video-level Recall@K for one query."""
-    if k <= 0 or not relevant_video_ids:
-        return 0.0
-    return float(bool(set(ranked_video_ids) & relevant_video_ids and k > 0)) if any(
-        video_id in relevant_video_ids for video_id in list(ranked_video_ids)[:k]
-    ) else 0.0
+    if k <= 0:
+        raise ValueError("k must be > 0")
+    relevant = {str(video_id) for video_id in relevant_video_ids}
+    if not relevant:
+        raise ValueError("relevant_video_ids must not be empty")
+
+    for candidate in ranked_candidates[:k]:
+        if _video_id(candidate) in relevant:
+            return 1.0
+    return 0.0
 
 
 def recall_at_ks(
-    ranked_video_ids: Iterable[str],
-    relevant_video_ids: set[str],
-    ks: tuple[int, ...] = (1, 5, 20, 50, 100),
+    ranked_candidates: Sequence[Any],
+    relevant_video_ids: Iterable[str],
+    ks: Sequence[int] = DEFAULT_KS,
 ) -> dict[int, float]:
-    ranked = list(ranked_video_ids)
-    return {k: recall_at_k(ranked, relevant_video_ids, k) for k in ks}
+    """Compute the competition-oriented Recall@1/5/20/50/100 curve."""
+    return {
+        int(k): recall_at_k(ranked_candidates, relevant_video_ids, int(k))
+        for k in ks
+    }
+
+
+def mean_recall_at_ks(
+    ranked_lists: Iterable[Sequence[Any]],
+    relevant_sets: Iterable[Iterable[str]],
+    ks: Sequence[int] = DEFAULT_KS,
+) -> dict[int, float]:
+    """Average Recall@K over a query collection."""
+    rows = [recall_at_ks(ranked, relevant, ks) for ranked, relevant in zip(ranked_lists, relevant_sets)]
+    if not rows:
+        return {int(k): 0.0 for k in ks}
+    return {
+        int(k): sum(row[int(k)] for row in rows) / len(rows)
+        for k in ks
+    }
+
+
+def _video_id(candidate: Any) -> str:
+    if isinstance(candidate, dict):
+        try:
+            return str(candidate["video_id"])
+        except KeyError as exc:
+            raise ValueError(f"Candidate has no video_id: {candidate!r}") from exc
+
+    try:
+        return str(candidate.video_id)
+    except AttributeError as exc:
+        raise ValueError(f"Candidate has no video_id: {candidate!r}") from exc
