@@ -19,10 +19,9 @@ def recall_at_k(
     if not relevant:
         raise ValueError("relevant_video_ids must not be empty")
 
-    for candidate in ranked_candidates[:k]:
-        if _video_id(candidate) in relevant:
-            return 1.0
-    return 0.0
+    return float(
+        any(_video_id(candidate) in relevant for candidate in ranked_candidates[:k])
+    )
 
 
 def recall_at_ks(
@@ -56,6 +55,8 @@ def mean_recall_at_ks(
 
 
 def _video_id(candidate: Any) -> str:
+    if isinstance(candidate, str):
+        return candidate
     if isinstance(candidate, dict):
         try:
             return str(candidate["video_id"])
