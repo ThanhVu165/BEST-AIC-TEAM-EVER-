@@ -70,7 +70,14 @@ class CLIPTextEncoder:
         tokens = {name: value.to(self.device) for name, value in tokens.items()}
 
         with self._torch.inference_mode():
-            features = self._model.get_text_features(**tokens)
+            # Recent transformers releases may return a ModelOutput from
+            # get_text_features() instead of the projected tensor expected by
+            # this adapter. Build the CLIP text embedding explicitly so the
+            # output remains the same 512-D projected space as BTC's ViT-B/32
+            # image features.
+            text_outputs = self._model.text_model(**tokens)
+            pooled = text_outputs.pooler_output
+            features = self._model.text_projection(pooled)
             features = features / features.norm(dim=-1, keepdim=True).clamp_min(1e-12)
 
         return features[0].detach().cpu().numpy().astype(np.float32, copy=False)
