@@ -1,9 +1,4 @@
-"""Stable data-access boundary consumed by Query Engine.
-
-The query layer must depend on this interface, not directly on SQLite, FAISS,
-or raw dataset files. The local implementation is intentionally lightweight
-for the single-machine competition setup.
-"""
+"""Stable data-access boundary consumed by Query Engine."""
 from __future__ import annotations
 
 import sqlite3
@@ -17,6 +12,8 @@ from schemas.contracts import FrameRecord, ObjectRecord, VideoRecord
 
 
 class DataStore(ABC):
+    """Storage contract. Query code never accesses SQLite/FAISS directly."""
+
     @abstractmethod
     def get_video(self, video_id: str) -> VideoRecord | None:
         raise NotImplementedError
@@ -41,18 +38,15 @@ class DataStore(ABC):
 
 
 class LocalDataStore(DataStore):
-    """SQLite + optional FAISS implementation.
-
-    `search_clip` returns normalized candidate dictionaries. If FAISS has not
-    been built yet, it returns an empty list instead of silently using a
-    different retrieval implementation.
-    """
+    """SQLite + optional FAISS implementation for a single-machine deployment."""
 
     def __init__(self, db_path: str | Path, clip_index: Any | None = None):
         self.db_path = Path(db_path)
         self.clip_index = clip_index
 
     def _connect(self) -> sqlite3.Connection:
+        if not self.db_path.is_file():
+            raise FileNotFoundError(f"SQLite database not found: {self.db_path}")
         conn = sqlite3.connect(self.db_path)
         conn.row_factory = sqlite3.Row
         return conn
@@ -75,6 +69,8 @@ class LocalDataStore(DataStore):
     def get_frames_in_range(
         self, video_id: str, start_frame: int, end_frame: int
     ) -> list[FrameRecord]:
+        if end_frame < start_frame:
+            return []
         with self._connect() as conn:
             rows = conn.execute(
                 """SELECT * FROM frames
@@ -96,8 +92,13 @@ class LocalDataStore(DataStore):
         objects = [
             {
                 "label": row["label"],
-                "confidence": row["confidence"],
-                "bbox": [row["x1"], row["y1"], row["x2"], row["y2"]],
+                "confidence": float(row["confidence"]),
+                "bbox": [
+                    float(row["x1"]),
+                    float(row["y1"]),
+                    float(row["x2"]),
+                    float(row["y2"]),
+                ],
             }
             for row in rows
         ]
@@ -105,5 +106,7 @@ class LocalDataStore(DataStore):
 
     def search_clip(self, vector: np.ndarray, top_k: int) -> list[dict[str, Any]]:
         if self.clip_index is None:
+            raise RuntimeError("CLIP index is not configured")
+        if top_k <= 0:
             return []
         return self.clip_index.search(vector, top_k)
