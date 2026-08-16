@@ -8,7 +8,7 @@ Expected input tree (relative to --data-root):
     mapping/map-keyframes/<video_id>.csv
     media_info/media-info/<video_id>.json
 
-The repository stores this official data under ``data/raw``.  Generated
+The repository stores this official data under ``data/raw``. Generated
 artifacts are kept outside git in ``database/`` and ``indexes/``.
 """
 from __future__ import annotations
@@ -174,14 +174,15 @@ def build(data_root: Path, db_path: Path, index_path: Path, mapping_out: Path) -
             frame_dir = keyframe_root / video_id
             object_dir = object_root / video_id
             for row in rows:
+                keyframe_n = int(row["n"])
                 frame_id = int(row["frame_idx"])
                 frame_path = _find_artifact(frame_dir, row["n"], row["frame_idx"], "jpg")
                 if frame_path is None:
-                    raise FileNotFoundError(f"{video_id}: keyframe missing for frame_idx={frame_id}")
+                    raise FileNotFoundError(f"{video_id}: keyframe missing for keyframe_n={keyframe_n}, frame_idx={frame_id}")
                 stored_frame_path = frame_path.relative_to(ROOT).as_posix() if frame_path.is_relative_to(ROOT) else frame_path.as_posix()
                 conn.execute(
-                    "INSERT INTO frames(video_id,frame_id,timestamp,path,is_keyframe) VALUES(?,?,?,?,1)",
-                    (video_id, frame_id, float(row["pts_time"]), stored_frame_path),
+                    "INSERT INTO frames(video_id,keyframe_n,frame_id,timestamp,path,is_keyframe) VALUES(?,?,?,?,?,1)",
+                    (video_id, keyframe_n, frame_id, float(row["pts_time"]), stored_frame_path),
                 )
 
                 object_path = _find_artifact(object_dir, row["n"], row["frame_idx"], "json")
@@ -193,11 +194,11 @@ def build(data_root: Path, db_path: Path, index_path: Path, mapping_out: Path) -
                             continue
                         label, confidence, bbox = parsed
                         conn.execute(
-                            """INSERT INTO objects(video_id,frame_id,label,confidence,x1,y1,x2,y2)
-                               VALUES(?,?,?,?,?,?,?,?)""",
-                            (video_id, frame_id, label, confidence, *bbox),
+                            """INSERT INTO objects(video_id,keyframe_n,frame_id,label,confidence,x1,y1,x2,y2)
+                               VALUES(?,?,?,?,?,?,?,?,?)""",
+                            (video_id, keyframe_n, frame_id, label, confidence, *bbox),
                         )
-                rows_for_index.append({"video_id": video_id, "frame_id": frame_id})
+                rows_for_index.append({"video_id": video_id, "keyframe_n": keyframe_n, "frame_id": frame_id})
 
             if dimension is None:
                 dimension = int(clip.shape[1])
@@ -210,7 +211,6 @@ def build(data_root: Path, db_path: Path, index_path: Path, mapping_out: Path) -
         count = clip.shape[0]
         matrix[cursor : cursor + count] = np.asarray(clip, dtype=np.float32)
         cursor += count
-    import faiss  # type: ignore
     faiss.normalize_L2(matrix)
     index = faiss.IndexFlatIP(matrix.shape[1])
     index.add(matrix)
