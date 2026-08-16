@@ -1,14 +1,10 @@
 """Run a local query and produce a human-reviewable ranked result report.
 
-This is intentionally an internal validation tool. It does not claim official
-AIC ground truth and does not alter model predictions.
+This is an internal validation tool. It does not claim official AIC ground truth
+and does not alter model predictions.
 
 Example (PowerShell):
     python scripts/manual_review.py --query "a man riding a bicycle" --top-k 20
-
-The report contains the candidate video/frame identity, score components,
-timestamp and local keyframe path. An HTML file is generated so the retrieved
-keyframes can be inspected side by side in a browser.
 """
 from __future__ import annotations
 
@@ -21,6 +17,7 @@ from typing import Any
 from data_layer.datastore import LocalDataStore
 from data_layer.faiss_store import FAISSFrameStore
 from query_engine import BaselineQueryEngine, CLIPTextEncoder
+from query_engine.retrieval import ClipCandidateRetriever
 from schemas import QueryRequest
 
 
@@ -35,44 +32,63 @@ def _build_engine(db: Path, index: Path, mapping: Path) -> BaselineQueryEngine:
     store = FAISSFrameStore(index, mapping)
     store.load()
     datastore = LocalDataStore(db, clip_index=store)
-    return BaselineQueryEngine(
-        retriever=__import__("query_engine.retrieval", fromlist=["ClipCandidateRetriever"]).ClipCandidateRetriever(
-            datastore,
-            CLIPTextEncoder(),
-            frame_top_k=5000,
-            video_top_k=100,
-        )
+    retriever = ClipCandidateRetriever(
+        datastore,
+        CLIPTextEncoder(),
+        frame_top_k=5000,
+        video_top_k=100,
     )
+    return BaselineQueryEngine(retriever)
 
 
-def _absolute_path(raw: str) -> Path:
+def _resolve_path(raw: str) -> Path:
     path = Path(raw)
     if path.is_absolute():
         return path
     return ROOT / path
 
 
-def _render_html(query: str, task: str, candidates: list[dict[str, Any]], output: Path) -> None:
+def _render_html(
+    query: str,
+    task: str,
+    candidates: list[dict[str, Any]],
+    datastore: LocalDataStore,
+    output: Path,
+) -> None:
     cards: list[str] = []
     for item in candidates:
         evidence = item.get("evidence", {})
         keyframe_n = evidence.get("keyframe_n")
-        video_id = item.get("video_id", "")
+        video_id = str(item.get("video_id", ""))
         frame_id = item.get("frame_id", "")
         score = item.get("score", "")
+        frame_path = ""
         timestamp = ""
-        path = ""
-        if video_id and keyframe_n is not None:
-            # Re-read the SQLite row only when the report is rendered; this
-            # keeps the search result JSON independent from UI concerns.
-            pass
+        if keyframe_n is not None:
+            frame = datastore.get_frame(video_id, int(keyframe_n))
+            if frame is not None:
+                frame_path = str(_resolve_path(frame.path))
+                timestamp = f"{frame.timestamp:.3f}s"
+
+        image_html = "<p><i>keyframe image unavailable</i></p>"
+        if frame_path and Path(frame_path).is_file():
+            image_uri = Path(frame_path).resolve().as_uri()
+            image_html = (
+                f'<img src="{html.escape(image_uri, quote=True)}" '
+                'style="max-width:420px;max-height:300px;object-fit:contain">'
+            )
+
         cards.append(
             "<article class='card'>"
-            f"<h3>#{html.escape(str(item.get('rank', '')))} — {html.escape(str(video_id))}</h3>"
-            f"<p>frame={html.escape(str(frame_id))} &nbsp; keyframe={html.escape(str(keyframe_n))} "
-            f"&nbsp; score={html.escape(str(score))}</p>"
-            f"<p>retrieval={html.escape(str(item.get('retrieval_score')))} "
-            f"&nbsp; temporal={html.escape(str(item.get('temporal_score')))}</p>"
+            f"<h3>#{html.escape(str(item.get('rank', '')))} — {html.escape(video_id)}</h3>"
+            f"{image_html}"
+            f"<p>frame={html.escape(str(frame_id))} &nbsp; "
+            f"keyframe={html.escape(str(keyframe_n))} &nbsp; "
+            f"time={html.escape(timestamp)} &nbsp; "
+            f"score={html.escape(str(score))}</p>"
+            f"<p>retrieval={html.escape(str(item.get('retrieval_score')))} &nbsp; "
+            f"temporal={html.escape(str(item.get('temporal_score')))}</p>"
+            f"<p>sources={html.escape(str(evidence.get('sources', [])))}</p>"
             "</article>"
         )
 
@@ -80,14 +96,16 @@ def _render_html(query: str, task: str, candidates: list[dict[str, Any]], output
 <html><head><meta charset="utf-8"><title>AIC manual review</title>
 <style>
 body{font-family:Arial,sans-serif;margin:24px;line-height:1.4}
-.card{border:1px solid #bbb;border-radius:8px;padding:12px;margin:10px 0}
+.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(450px,1fr));gap:14px}
+.card{border:1px solid #bbb;border-radius:8px;padding:12px}
 code{background:#eee;padding:2px 4px}
+img{display:block;margin:8px 0}
 </style></head><body>
 """
     document += f"<h1>AIC manual retrieval review</h1><p>Task: <b>{html.escape(task)}</b></p>"
-    document += f"<p>Query: <code>{html.escape(query)}</code></p>"
+    document += f"<p>Query: <code>{html.escape(query)}</code></p><div class='grid'>"
     document += "".join(cards)
-    document += "</body></html>"
+    document += "</div></body></html>"
     output.write_text(document, encoding="utf-8")
 
 
@@ -126,7 +144,7 @@ def main() -> int:
     json_path = args.out / "latest.json"
     html_path = args.out / "latest.html"
     json_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
-    _render_html(args.query, result.task, payload["candidates"], html_path)
+    _render_html(args.query, result.task, payload["candidates"], engine.retriever.datastore, html_path)
 
     print(json.dumps(payload, ensure_ascii=False, indent=2))
     print(f"JSON report: {json_path}")
