@@ -30,25 +30,39 @@ def make_engine() -> BaselineQueryEngine:
         FakeEmbedder(),
         frame_top_k=10,
         video_top_k=10,
+        max_frames_per_video=3,
     )
     return BaselineQueryEngine(retriever)
 
 
-def test_kis_keeps_multiple_video_hypotheses() -> None:
+def test_kis_preserves_multiple_frame_hypotheses() -> None:
     result = make_engine().search(
         QueryRequest(query_id="q1", task="KIS", description="a person speaks")
     )
 
     assert result.status == "completed"
     assert result.task == "KIS"
-    assert [item["video_id"] for item in result.candidates] == ["V1", "V2"]
-    assert result.candidates[0]["frame_id"] == 10
+    assert [(item["video_id"], item["frame_id"]) for item in result.candidates] == [
+        ("V1", 10),
+        ("V1", 11),
+        ("V2", 20),
+    ]
 
 
-def test_task_inference() -> None:
+def test_video_tasks_aggregate_to_one_hypothesis_per_video() -> None:
     qa = make_engine().search(
         QueryRequest(query_id="q2", description="scene", question="what color?")
     )
+
+    assert qa.task == "QA"
+    assert [(item["video_id"], item["frame_id"]) for item in qa.candidates] == [
+        ("V1", 10),
+        ("V2", 20),
+    ]
+    assert qa.candidates[0]["answer"] == ""
+
+
+def test_task_inference() -> None:
     trake = make_engine().search(
         QueryRequest(
             query_id="q3",
@@ -56,5 +70,5 @@ def test_task_inference() -> None:
         )
     )
 
-    assert qa.task == "QA"
     assert trake.task == "TRAKE"
+    assert [item["video_id"] for item in trake.candidates] == ["V1", "V2"]
