@@ -54,15 +54,18 @@ class BaselineQueryEngine(QueryEngine):
         selected = select_semantic_keyframes(
             [self._frame_evidence(hit) for hit in hits], max_candidates=100
         )
+        by_frame = {(hit.video_id, hit.frame_id): hit for hit in hits}
         return [
             Candidate(
                 rank=item.rank,
                 video_id=item.video_id,
                 frame_id=item.frame_id,
                 score=item.score,
-                retrieval_score=item.score,
+                retrieval_score=by_frame[(item.video_id, item.frame_id)].retrieval_score,
                 temporal_score=item.score,
-                evidence={"sources": ["clip", "temporal_proxy"]},
+                evidence=self._ranking_evidence(
+                    by_frame[(item.video_id, item.frame_id)]
+                ),
             ).model_dump()
             for item in selected
         ]
@@ -88,10 +91,8 @@ class BaselineQueryEngine(QueryEngine):
                 answer = result.answer
                 status = result.status
                 confidence = result.confidence
-            evidence = {
-                "sources": ["clip", "temporal_proxy"],
-                "answer_status": status,
-            }
+            evidence = self._ranking_evidence(hit)
+            evidence["answer_status"] = status
             if confidence is not None:
                 evidence["answer_confidence"] = confidence
             candidates.append(
@@ -101,7 +102,7 @@ class BaselineQueryEngine(QueryEngine):
                     frame_id=hit.frame_id,
                     score=hit.score,
                     answer=answer,
-                    retrieval_score=hit.score,
+                    retrieval_score=hit.retrieval_score,
                     temporal_score=hit.score,
                     evidence=evidence,
                 ).model_dump()
@@ -140,7 +141,11 @@ class BaselineQueryEngine(QueryEngine):
         for rank, (video_id, video_score) in enumerate(complete[:100], start=1):
             event_predictions = []
             for event in request.events:
-                hits = [hit for hit in per_event[event.event_id] if hit.video_id == video_id]
+                hits = [
+                    hit
+                    for hit in per_event[event.event_id]
+                    if hit.video_id == video_id
+                ]
                 selected = select_semantic_keyframes(
                     [self._frame_evidence(hit) for hit in hits], max_candidates=1
                 )
@@ -165,6 +170,15 @@ class BaselineQueryEngine(QueryEngine):
                 ).model_dump()
             )
         return results
+
+    @staticmethod
+    def _ranking_evidence(hit: RetrievalHit) -> dict[str, Any]:
+        return {
+            "sources": list(hit.sources),
+            "clip_score": hit.retrieval_score,
+            "object_score": hit.object_score,
+            "fused_score": hit.score,
+        }
 
     def _frame_record(self, hit: RetrievalHit):
         try:
