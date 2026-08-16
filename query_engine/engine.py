@@ -32,7 +32,7 @@ class BaselineQueryEngine(QueryEngine):
                 candidates = self._solve_qa(request)
             else:
                 candidates = self._solve_trake(request)
-        except Exception as exc:
+        except (FileNotFoundError, OSError, RuntimeError, TypeError, ValueError) as exc:
             return SearchResponse(
                 query_id=request.query_id,
                 task=task,
@@ -181,10 +181,7 @@ class BaselineQueryEngine(QueryEngine):
         }
 
     def _frame_record(self, hit: RetrievalHit):
-        try:
-            return self.retriever.datastore.get_frame(hit.video_id, hit.frame_id)
-        except Exception:
-            return None
+        return self.retriever.datastore.get_frame(hit.video_id, hit.frame_id)
 
     def _frame_evidence(self, hit: RetrievalHit) -> FrameEvidence:
         frame = self._frame_record(hit)
