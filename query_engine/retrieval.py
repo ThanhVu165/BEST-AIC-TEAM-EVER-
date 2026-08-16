@@ -1,4 +1,4 @@
-"""Candidate retrieval and optional auxiliary object-evidence reranking."""
+"""Candidate retrieval and auxiliary evidence reranking."""
 from __future__ import annotations
 
 import re
@@ -30,11 +30,11 @@ class RetrievalHit:
 
 
 class ClipCandidateRetriever:
-    """Retrieve frame hypotheses and optionally fuse object evidence.
+    """Retrieve frame hypotheses and optionally fuse auxiliary object evidence.
 
-    The default frame pool is intentionally much larger than the final
-    submission cutoff. The official metric rewards the best result at 1/5/20/
-    50/100, so collapsing too early can destroy recall before ranking begins.
+    The frame pool is intentionally larger than the final submission cutoff.
+    Video-level aggregation is performed only after frame retrieval so that
+    alternative frames remain available to KIS and temporal stages.
     """
 
     def __init__(
@@ -42,7 +42,7 @@ class ClipCandidateRetriever:
         datastore: DataStore,
         embedder: QueryEmbedder,
         *,
-        frame_top_k: int = 1000,
+        frame_top_k: int = 5000,
         video_top_k: int = 100,
         object_weight: float = 0.10,
     ) -> None:
@@ -59,7 +59,7 @@ class ClipCandidateRetriever:
         self.object_weight = object_weight
 
     def retrieve(self, query_text: str) -> list[RetrievalHit]:
-        """Return frame hypotheses without collapsing multiple frames per video."""
+        """Return ranked frame hypotheses without collapsing video alternatives."""
         text = query_text.strip()
         if not text:
             raise ValueError("query_text must not be empty")
@@ -72,19 +72,44 @@ class ClipCandidateRetriever:
         return self._rerank_with_objects(frame_hits, text)
 
     def retrieve_videos(self, query_text: str) -> list[RetrievalHit]:
-        """Aggregate frame evidence into one strongest hypothesis per video."""
-        frame_hits = self.retrieve(query_text)
-        best: dict[str, RetrievalHit] = {}
-        for hit in frame_hits:
-            previous = best.get(hit.video_id)
-            if previous is None or hit.score > previous.score:
-                best[hit.video_id] = hit
+        """Aggregate frame evidence into one strongest hypothesis per video.
 
-        ranked = sorted(
-            best.values(),
-            key=lambda item: (-item.score, item.video_id, item.frame_id, item.keyframe_n or 0),
+        The strongest frame remains the representative frame. Additional hits
+        from the same video are used only as a deterministic support signal for
+        ordering, so one video with many near-duplicate frames cannot completely
+        monopolize the candidate pool while genuine alternatives are retained.
+        """
+        frame_hits = self.retrieve(query_text)
+        grouped: dict[str, list[RetrievalHit]] = {}
+        for hit in frame_hits:
+            grouped.setdefault(hit.video_id, []).append(hit)
+
+        representatives: list[tuple[RetrievalHit, float]] = []
+        for video_id, hits in grouped.items():
+            ordered = sorted(
+                hits,
+                key=lambda item: (
+                    -item.score,
+                    item.frame_id,
+                    item.keyframe_n or 0,
+                ),
+            )
+            best = ordered[0]
+            support = float(np.mean([item.score for item in ordered[:3]]))
+            # Support is deliberately small: max-frame relevance remains the
+            # primary signal, while repeated strong evidence breaks close ties.
+            video_rank_score = 0.97 * best.score + 0.03 * support
+            representatives.append((best, video_rank_score))
+
+        representatives.sort(
+            key=lambda item: (
+                -item[1],
+                item[0].video_id,
+                item[0].frame_id,
+                item[0].keyframe_n or 0,
+            )
         )
-        return ranked[: self.video_top_k]
+        return [item[0] for item in representatives[: self.video_top_k]]
 
     def _rerank_with_objects(
         self,
@@ -103,9 +128,8 @@ class ClipCandidateRetriever:
                         label_tokens = _tokens(detection.label)
                         if not label_tokens:
                             continue
-                        # Exact token containment is deliberately conservative:
-                        # object detections are auxiliary evidence and must not
-                        # override CLIP retrieval on vague lexical matches.
+                        # Object detections are entity evidence only. They are
+                        # never allowed to claim that an action occurred.
                         overlap = len(label_tokens & query_tokens) / len(label_tokens)
                         if overlap == 1.0:
                             object_score = max(object_score, float(detection.confidence))
