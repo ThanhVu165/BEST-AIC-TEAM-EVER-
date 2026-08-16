@@ -1,7 +1,6 @@
 """Query Engine orchestration for KIS, QA and TRAKE."""
 from __future__ import annotations
 
-from collections import defaultdict
 from typing import Any
 
 from schemas import Candidate, QACandidate, QueryRequest, SearchResponse, TRAKECandidate
@@ -120,9 +119,6 @@ class BaselineQueryEngine(QueryEngine):
         if not request.events:
             raise ValueError("TRAKE requires at least one event")
 
-        # Retrieve independently for each event, but keep the full frame pool.
-        # The final video ranking is then based on all events jointly rather
-        # than on the first event alone.
         per_event: dict[str, list[RetrievalHit]] = {}
         for event in request.events:
             description = event.description.strip()
@@ -147,8 +143,6 @@ class BaselineQueryEngine(QueryEngine):
                 event_hits[event.event_id] = hits
                 best_scores.append(max(hit.score for hit in hits))
             if complete:
-                # Mean evidence rewards videos that explain every event while
-                # avoiding domination by one exceptionally strong event.
                 scored_videos.append((video_id, sum(best_scores) / len(best_scores), event_hits))
 
         scored_videos.sort(key=lambda item: (-item[1], item[0]))
