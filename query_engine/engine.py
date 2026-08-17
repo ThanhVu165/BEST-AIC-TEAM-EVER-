@@ -3,6 +3,8 @@ from __future__ import annotations
 
 from typing import Any
 
+import numpy as np
+
 from schemas import Candidate, QACandidate, QueryRequest, SearchResponse, TRAKECandidate
 
 from .answering import AnswerEvidence, AnswerExtractor, UnavailableAnswerExtractor
@@ -78,16 +80,37 @@ class BaselineQueryEngine(QueryEngine):
         if reader is None and single_reader is None: return {}
         grouped: dict[str, list[FrameEvidence]] = {}
         for item in items[: self.semantic_config.candidate_limit]: grouped.setdefault(item.video_id, []).append(item)
-        scores: dict[tuple[str, int], float] = {}
+
+        raw_scores: dict[tuple[str, int], float] = {}
         for video_id, video_items in grouped.items():
             frame_ids = [item.frame_id for item in video_items]
             images = reader(video_id, frame_ids) if reader is not None else {frame_id: single_reader(video_id, frame_id) for frame_id in frame_ids}
             valid_items = [item for item in video_items if images.get(item.frame_id) is not None]
             if not valid_items: continue
-            values = self.semantic_scorer.score_images([images[item.frame_id] for item in valid_items], text)
+            values = np.asarray(self.semantic_scorer.score_images([images[item.frame_id] for item in valid_items], text), dtype=np.float32)
             if len(values) != len(valid_items): raise ValueError("semantic scorer returned an invalid number of scores")
-            for item, value in zip(valid_items, values): scores[(item.video_id, item.frame_id)] = max(0.0, min(1.0, float(value)))
-        return scores
+            for item, value in zip(valid_items, values):
+                if not np.isfinite(value): raise ValueError("semantic scorer returned a non-finite score")
+                raw_scores[(item.video_id, item.frame_id)] = float(value)
+
+        if not raw_scores:
+            return {}
+        if not self.semantic_config.normalize_scores or len(raw_scores) == 1:
+            return {key: max(0.0, min(1.0, value)) for key, value in raw_scores.items()}
+
+        # SigLIP probabilities are calibrated as independent image/text
+        # compatibility probabilities, not as scores whose absolute scale is
+        # guaranteed to match CLIP retrieval. On this dataset/domain they can
+        # all be extremely small (for example ~1e-6), which would make a
+        # configured semantic weight effectively disappear in fusion. For
+        # reranking we therefore preserve ordering but calibrate the candidate
+        # set to [0, 1] before combining it with retrieval/temporal evidence.
+        values = np.asarray(list(raw_scores.values()), dtype=np.float32)
+        low = float(values.min())
+        high = float(values.max())
+        if high <= low:
+            return {key: 0.0 for key in raw_scores}
+        return {key: float((value - low) / (high - low)) for key, value in raw_scores.items()}
 
     def _solve_qa(self, spec: QuerySpec) -> list[dict[str, Any]]:
         hits = self.retriever.retrieve_videos(spec)
