@@ -1,127 +1,133 @@
-# Architecture v1
+# Architecture — AIC 2026
+
+**Canonical pipeline:** `docs/AIC2026_CANONICAL_PIPELINE.md`
+
+This file defines subsystem boundaries. The canonical document defines the single end-to-end retrieval pipeline. Do not interpret this file as a second architecture.
 
 ## 1. High-level system
 
 ```text
-                           OFFLINE
+                         OFFLINE
 
-Videos + BTC auxiliary data
-            |
-            v
-+-------------------------+
-| Video Processing        |  Person 1
-| - ingest                 |
-| - frame mapping          |
-| - feature validation     |
-| - optional OCR/ASR       |
-| - database               |
-| - vector indexes         |
-+------------+-------------+
-             |
-             | Stable data interfaces
-             v
-+-------------------------+
-| Query Engine             |  Person 2
-| - query understanding    |
-| - candidate retrieval    |
-| - temporal localization  |
-| - reranking              |
-| - KIS/Q&A/TRAKE          |
-| - top-100 ranking        |
-+------------+-------------+
-             |
-             | REST /api/v1
-             v
-+-------------------------+
-| Streamlit UI             |  Person 3
-| - dev/debug mode         |
-| - competition mode       |
-| - result viewer          |
-| - submission export      |
-+-------------------------+
+Official Videos + BTC supporting data
+              |
+              v
++---------------------------+
+| Video / Data Pipeline     |  Person 1
+| - ingest + timeline       |
+| - frame/keyframe mapping  |
+| - BTC CLIP validation     |
+| - objects + metadata      |
+| - SQLite + FAISS          |
+| - exact frame access      |
+| - optional OCR/ASR        |
++-------------+-------------+
+              |
+              | stable DataStore contract
+              v
++---------------------------+
+| Query Engine              |  Person 2
+| - query understanding     |
+| - candidate retrieval     |
+| - video ranking           |
+| - temporal localization   |
+| - semantic keyframe       |
+| - multimodal reranking    |
+| - KIS / Q&A / TRAKE       |
+| - Top-100 ranking         |
++-------------+-------------+
+              |
+              | FastAPI /api/v1
+              v
++---------------------------+
+| Streamlit UI              |  Person 3
+| - operator/debug UI       |
+| - result viewer           |
+| - submission export       |
++---------------------------+
 ```
 
-## 2. Ownership boundaries
+## 2. One pipeline, three ownership domains
 
-### Person 1: Video Processing
+There is only one end-to-end pipeline. The three people own different stages of it:
 
-Owns `video_pipeline/`, the SQLite database and FAISS indexes.
+```text
+Video/Data offline
+      -> Query Engine online
+      -> API
+      -> UI
+```
 
-Responsibilities:
+Experimental implementations belong inside their stage. Do not create `pipeline_v2`, `new_pipeline`, or another independent orchestrator.
+
+## 3. Ownership boundaries
+
+### Person 1: Video/Data Pipeline
+
+Owns:
 
 - scan/ingest video files
-- build video manifest
+- build video manifest and timeline
 - validate BTC keyframe/frame mappings
 - validate and index BTC CLIP features
 - normalize BTC object JSON
 - normalize metadata
-- provide exact frame access from original video/keyframe mapping
-- optionally build OCR and ASR artifacts
+- SQLite database
+- FAISS/vector indexes and internal-id mappings
+- exact frame access from source video/keyframe mapping
+- optional OCR and ASR artifacts
 
-Does not own query semantics, task-specific ranking or answer generation.
+Does not own query semantics, task-specific ranking policy, answer generation or UI.
 
 ### Person 2: Query Engine
 
-Owns `query_engine/`.
-
-Responsibilities:
+Owns:
 
 ```text
-Natural Language Query
- -> normalize/parse
- -> task detection (when needed)
- -> query representation
+Natural Language / structured query
+ -> query understanding
  -> candidate video retrieval
- -> temporal localization
- -> fine-grained keyframe selection
+ -> video-level aggregation/ranking
+ -> coarse-to-fine temporal localization
+ -> semantic keyframe selection
  -> multimodal reranking
- -> task solver
- -> candidate generation and ranking (<=100)
- -> submission formatting
+ -> KIS / Q&A / TRAKE
+ -> Top-100 candidate ranking
 ```
 
-The Query Engine depends on abstractions from `schemas/` and data-access interfaces, not on the physical details of SQLite/FAISS files.
+The Query Engine consumes `DataStore`/shared schemas and must not depend on SQLite/FAISS implementation details.
 
 ### Person 3: UI
 
-Owns `ui/`.
+Owns Streamlit pages/components, API client, result visualization, debug display and submission export.
 
-Responsibilities:
+UI must use FastAPI and must not import Query Engine internals or access SQLite/FAISS directly.
 
-- Streamlit pages/components
-- API client
-- video/frame result visualization
-- debug information display
-- candidate ranking display
-- submission export trigger
+## 4. Runtime model
 
-UI must use FastAPI and must not import query-engine internals.
-
-## 3. Runtime model
-
-Primary deployment is one machine. Services may run as separate processes:
+Primary target is one local machine with constrained VRAM. Expensive VLM/video models must run after candidate reduction, not over the full corpus.
 
 ```text
 Streamlit :8501
 FastAPI   :8000
-Query Engine process/module
+Query Engine module/process
 SQLite + FAISS on local disk
-Video data on local disk
+Video/data on local disk
 ```
 
-The system should not require a network or external API for the baseline.
+The baseline must not require external network services.
 
-## 4. Data flow
+## 5. Data flow
 
 ### Offline
 
 ```text
-Video
-  -> video manifest
-  -> frame mapping
-  -> normalized auxiliary artifacts
+Video + BTC supporting data
+  -> validation
+  -> video/timeline/frame mapping
+  -> normalized auxiliary records
   -> SQLite
-  -> FAISS/vector indexes
+  -> BTC CLIP FAISS index + other optional indexes
 ```
 
 ### Online
@@ -129,61 +135,45 @@ Video
 ```text
 QueryRequest
   -> query understanding
-  -> multi-signal candidate retrieval
+  -> visual candidate retrieval
+  -> video aggregation/ranking
   -> temporal localization
-  -> reranking
-  -> task-specific result
-  -> ranked candidate list (max 100)
+  -> semantic keyframe / answer / event alignment
+  -> multimodal reranking
+  -> ranked candidates <= 100
+  -> submission formatting
 ```
 
-## 5. Retrieval architecture
+## 6. Retrieval principles
 
-Use layered retrieval:
+1. BTC CLIP ViT-B/32 is the current validated visual retrieval baseline.
+2. Keep multiple hypotheses because evaluation uses R@1/R@5/R@20/R@50/R@100.
+3. Use original video for fine temporal evidence when exact event frames matter.
+4. Auxiliary objects/metadata/OCR/ASR are evidence signals, not automatic overrides.
+5. Any new model/index must be benchmarked and remain replaceable.
 
-```text
-Stage 1: dense/coarse retrieval
-Stage 2: multimodal candidate expansion/filtering
-Stage 3: temporal localization
-Stage 4: fine-grained reranking/keyframe selection
-Stage 5: task-specific answer/alignment
-Stage 6: candidate ranking/diversification
-```
+## 7. TRAKE principle
 
-The exact model at each stage is not part of the contract.
-
-## 6. Why layered retrieval
-
-The available machine has an RTX 4050 Laptop GPU with approximately 6 GB dedicated VRAM. Expensive VLM/video models should therefore be used after candidate reduction, not across the entire corpus.
-
-## 7. Candidate principle
-
-The system must preserve multiple ranked hypotheses because BTC evaluates R@1/R@5/R@20/R@50/R@100. Do not discard alternatives too early.
-
-## 8. TRAKE principle
-
-TRAKE is a structured event-sequence alignment problem:
+TRAKE is a structured temporal event-sequence problem:
 
 ```text
-video candidate
-  -> event 1 localization
-  -> event 2 localization
-  -> ...
-  -> event N localization
+candidate video
+  -> event hypotheses
+  -> temporal localization per event
+  -> semantic keyframe candidates
   -> sequence-consistent alignment
+  -> final video + event frames
 ```
 
-When the query semantics imply event order, alignment should preserve that order. The final TRAKE candidate represents one video plus all event frame predictions.
+If event order is meaningful, preserve `t1 < t2 < ... < tN`. Independent event retrieval can provide hypotheses but is not sufficient as the final alignment policy.
 
-## 9. Replaceability
+## 8. Shared contracts
 
-The following must be replaceable through interfaces/adapters:
+The shared contracts in `schemas/`, `data_layer/` and `docs/` define integration boundaries.
 
-- vector store
-- embedding model
-- OCR
-- ASR
-- temporal model
-- reranker
-- VLM
+- `video_id` identifies a video.
+- `frame_id` is the dataset/source frame identifier and must not be silently renumbered.
+- timestamp/frame mappings must remain cross-resolvable.
+- submission formatting is isolated from inference.
 
-Do not make shared schemas encode a specific model name.
+Model names are not encoded into shared schemas.
