@@ -3,6 +3,7 @@
 from .answering import AnswerEvidence, AnswerResult, UnavailableAnswerExtractor
 from .clip_encoder import CLIPTextEncoder
 from .engine import BaselineQueryEngine
+from .late_verification import LateVerificationConfig, verify_candidate_windows
 from .mock_engine import MockQueryEngine
 from .query_understanding import QueryEventSpec, QuerySpec, understand_query
 from .semantic import SemanticQuery, decompose_query, semantic_score
@@ -22,6 +23,7 @@ __all__ = [
     "BaselineQueryEngine",
     "CLIPTextEncoder",
     "InternVideo3Verifier",
+    "LateVerificationConfig",
     "MockQueryEngine",
     "Qwen3VLVerifier",
     "QueryEventSpec",
@@ -40,4 +42,5 @@ __all__ = [
     "semantic_score",
     "semantic_text",
     "understand_query",
+    "verify_candidate_windows",
 ]
