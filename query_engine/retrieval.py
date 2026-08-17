@@ -34,12 +34,7 @@ class RetrievalHit:
 
 
 class ClipCandidateRetriever:
-    """Retrieve frame hypotheses from BTC CLIP and collect auxiliary evidence.
-
-    The retriever deliberately keeps frame alternatives intact. Video-level
-    aggregation happens only in `retrieve_videos`, allowing later temporal and
-    reranking stages to inspect multiple hypotheses.
-    """
+    """Retrieve frame hypotheses from BTC CLIP and collect auxiliary evidence."""
 
     def __init__(
         self,
@@ -48,22 +43,30 @@ class ClipCandidateRetriever:
         *,
         frame_top_k: int = 5000,
         video_top_k: int = 100,
-        object_weight: float = 0.10,
+        object_weight: float = 0.05,
+        metadata_weight: float = 0.03,
+        ocr_weight: float = 0.02,
+        asr_weight: float = 0.02,
     ) -> None:
         if frame_top_k <= 0:
             raise ValueError("frame_top_k must be > 0")
         if video_top_k <= 0:
             raise ValueError("video_top_k must be > 0")
-        if not 0.0 <= object_weight < 1.0:
-            raise ValueError("object_weight must be in [0, 1)")
+        weights = (object_weight, metadata_weight, ocr_weight, asr_weight)
+        if any(not 0.0 <= weight < 1.0 for weight in weights):
+            raise ValueError("auxiliary weights must be in [0, 1)")
+        if sum(weights) >= 0.5:
+            raise ValueError("auxiliary evidence weights must remain below 0.5 total")
         self.datastore = datastore
         self.embedder = embedder
         self.frame_top_k = frame_top_k
         self.video_top_k = video_top_k
         self.object_weight = object_weight
+        self.metadata_weight = metadata_weight
+        self.ocr_weight = ocr_weight
+        self.asr_weight = asr_weight
 
     def retrieve(self, query: QuerySpec | str) -> list[RetrievalHit]:
-        """Return ranked frame hypotheses without collapsing video alternatives."""
         query_text = query.text if isinstance(query, QuerySpec) else query
         text = query_text.strip()
         if not text:
@@ -77,7 +80,6 @@ class ClipCandidateRetriever:
         return self._collect_auxiliary_evidence(frame_hits, text)
 
     def retrieve_videos(self, query: QuerySpec | str) -> list[RetrievalHit]:
-        """Aggregate frame evidence into strongest hypotheses per video."""
         frame_hits = self.retrieve(query)
         grouped: dict[str, list[RetrievalHit]] = {}
         for hit in frame_hits:
@@ -109,12 +111,11 @@ class ClipCandidateRetriever:
         hits: list[RetrievalHit],
         query_text: str,
     ) -> list[RetrievalHit]:
-        datastore = self.datastore
         query_tokens = _tokens(query_text)
-        get_objects = getattr(datastore, "get_objects", None)
-        get_ocr = getattr(datastore, "get_ocr", None)
-        get_metadata = getattr(datastore, "get_metadata", None)
-        get_asr = getattr(datastore, "get_asr", None)
+        get_objects = getattr(self.datastore, "get_objects", None)
+        get_ocr = getattr(self.datastore, "get_ocr", None)
+        get_metadata = getattr(self.datastore, "get_metadata", None)
+        get_asr = getattr(self.datastore, "get_asr", None)
 
         enriched: list[RetrievalHit] = []
         for hit in hits:
@@ -124,13 +125,14 @@ class ClipCandidateRetriever:
             asr_score = self._asr_score(hit, query_tokens, get_asr)
 
             retrieval_score = hit.retrieval_score if hit.retrieval_score is not None else hit.score
-            auxiliary = (
-                self.object_weight * object_score
-                + 0.03 * metadata_score
-                + 0.02 * ocr_score
-                + 0.02 * asr_score
+            fused = (
+                (1.0 - self.object_weight - self.metadata_weight - self.ocr_weight - self.asr_weight)
+                * retrieval_score
+                + self.object_weight * object_score
+                + self.metadata_weight * metadata_score
+                + self.ocr_weight * ocr_score
+                + self.asr_weight * asr_score
             )
-            fused = (1.0 - self.object_weight) * retrieval_score + auxiliary
             sources = list(hit.sources)
             for name, score in (
                 ("objects", object_score),
