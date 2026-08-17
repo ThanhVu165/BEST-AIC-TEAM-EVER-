@@ -7,7 +7,7 @@ from math import isfinite
 
 @dataclass(frozen=True)
 class FrameEvidence:
-    """A retrieved source frame with optional timestamp evidence."""
+    """Retrieved source-frame evidence used by temporal stages."""
 
     video_id: str
     frame_id: int
@@ -18,7 +18,7 @@ class FrameEvidence:
 
 @dataclass(frozen=True)
 class TemporalCandidate:
-    """A temporally grounded frame/window hypothesis."""
+    """Temporally grounded frame hypothesis."""
 
     video_id: str
     frame_id: int
@@ -38,10 +38,13 @@ def select_semantic_keyframes(
     *,
     max_candidates: int = 100,
 ) -> list[TemporalCandidate]:
-    """Select deterministic semantic-frame hypotheses from retrieved evidence."""
+    """Select deterministic keyframe hypotheses from retrieved evidence.
+
+    This is intentionally a proxy stage. It does not claim fine temporal
+    grounding; every returned frame is an existing source-frame hypothesis.
+    """
     if max_candidates <= 0:
         return []
-
     ordered = sorted(
         frames,
         key=lambda item: (
@@ -70,15 +73,12 @@ def select_ordered_event_frames(
     max_candidates_per_event: int = 100,
     allow_same_frame: bool = True,
 ) -> list[TemporalCandidate]:
-    """Choose one frame per event while respecting temporal event order.
+    """Select one frame per event while respecting temporal event order.
 
-    This is a small dynamic-programming aligner intended for TRAKE candidate
-    generation. It does not invent frames: every returned frame must already be
-    present in the retrieval candidates. The objective is the sum of retrieval
-    scores, with a deterministic tie-break toward earlier frames.
-
-    If no temporally valid path exists, the function falls back to the strongest
-    candidate of each event rather than silently dropping the video.
+    Every output frame must already be present in retrieval evidence. A valid
+    path maximizes cumulative retrieval evidence under the event-order
+    constraint. If no valid path exists, an empty result is returned so the
+    caller does not silently emit a semantically invalid alignment.
     """
     if not events or max_candidates_per_event <= 0:
         return []
@@ -96,20 +96,8 @@ def select_ordered_event_frames(
         candidates.append(ranked)
 
     if any(not event for event in candidates):
-        return [
-            TemporalCandidate(
-                video_id=event[0].video_id,
-                frame_id=event[0].frame_id,
-                keyframe_n=event[0].keyframe_n,
-                timestamp=event[0].timestamp,
-                score=_safe_score(event[0].retrieval_score),
-                rank=1,
-            )
-            for event in candidates
-            if event
-        ]
+        return []
 
-    # dp[i][j] = best cumulative score ending at candidate j of event i.
     dp: list[list[float]] = [[_safe_score(item.retrieval_score) for item in candidates[0]]]
     parent: list[list[int | None]] = [[None] * len(candidates[0])]
 
@@ -120,20 +108,20 @@ def select_ordered_event_frames(
             best_score = float("-inf")
             best_parent: int | None = None
             for previous_idx, previous in enumerate(candidates[event_idx - 1]):
-                valid = current.frame_id >= previous.frame_id if allow_same_frame else current.frame_id > previous.frame_id
+                valid = (
+                    current.frame_id >= previous.frame_id
+                    if allow_same_frame
+                    else current.frame_id > previous.frame_id
+                )
                 if not valid or not isfinite(dp[event_idx - 1][previous_idx]):
                     continue
                 score = dp[event_idx - 1][previous_idx] + _safe_score(current.retrieval_score)
-                if (
-                    score > best_score
-                    or (
-                        score == best_score
-                        and best_parent is not None
-                        and previous.frame_id < candidates[event_idx - 1][best_parent].frame_id
-                    )
-                ):
+                if score > best_score:
                     best_score = score
                     best_parent = previous_idx
+                elif score == best_score and best_parent is not None:
+                    if previous.frame_id < candidates[event_idx - 1][best_parent].frame_id:
+                        best_parent = previous_idx
             current_scores.append(best_score)
             current_parent.append(best_parent)
         dp.append(current_scores)
@@ -141,29 +129,16 @@ def select_ordered_event_frames(
 
     final_idx = max(
         range(len(candidates[-1])),
-        key=lambda idx: (
-            dp[-1][idx],
-            -candidates[-1][idx].frame_id,
-            -idx,
-        ),
+        key=lambda idx: (dp[-1][idx], -candidates[-1][idx].frame_id, -idx),
     )
     if not isfinite(dp[-1][final_idx]):
-        return [
-            TemporalCandidate(
-                video_id=event[0].video_id,
-                frame_id=event[0].frame_id,
-                keyframe_n=event[0].keyframe_n,
-                timestamp=event[0].timestamp,
-                score=_safe_score(event[0].retrieval_score),
-                rank=1,
-            )
-            for event in candidates
-        ]
+        return []
 
     selected_indices = [final_idx]
     for event_idx in range(len(candidates) - 1, 0, -1):
         previous_idx = parent[event_idx][selected_indices[-1]]
-        assert previous_idx is not None
+        if previous_idx is None:
+            return []
         selected_indices.append(previous_idx)
     selected_indices.reverse()
 
@@ -188,13 +163,10 @@ def group_into_temporal_windows(
     *,
     max_gap_frames: int = 10,
 ) -> list[list[FrameEvidence]]:
-    """Group retrieved frames into deterministic local temporal windows."""
+    """Group retrieved source frames into local frame-contiguous windows."""
     if max_gap_frames < 0:
         raise ValueError("max_gap_frames must be >= 0")
-    ordered = sorted(
-        frames,
-        key=lambda item: (item.video_id, item.frame_id, item.keyframe_n or 0),
-    )
+    ordered = sorted(frames, key=lambda item: (item.video_id, item.frame_id, item.keyframe_n or 0))
     windows: list[list[FrameEvidence]] = []
     current: list[FrameEvidence] = []
     previous_video: str | None = None
@@ -226,7 +198,7 @@ def align_event_sequence(
     *,
     max_candidates_per_event: int = 100,
 ) -> list[list[TemporalCandidate]]:
-    """Align each event independently while retaining top-k hypotheses."""
+    """Retain ranked hypotheses per event without forcing alignment."""
     return [
         select_semantic_keyframes(event, max_candidates=max_candidates_per_event)
         for event in events
