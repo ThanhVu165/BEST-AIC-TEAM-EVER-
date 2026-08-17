@@ -61,6 +61,15 @@ No new model becomes the production default solely because it is newer or strong
 
 The preferred system is the best end-to-end trade-off, not the largest model.
 
+### Semantic benchmark protocol
+
+There are two distinct benchmark layers:
+
+1. **Text-only query decomposition tests** for parser behavior. These do not measure visual semantic understanding.
+2. **Real-frame hard-negative tests** for image-text models. Use `benchmarks/semantic_visual_hard_negatives.schema.json` and run `tools/semantic_visual_benchmark.py` against actual extracted frames. A typical pair should compare `person riding motorcycle` against visually similar negatives such as standing near, repairing, pushing, or riding a bicycle.
+
+The visual benchmark reports pairwise accuracy, positive-vs-negative margin and inference latency. The same manifest can be evaluated with multiple model adapters once they are implemented.
+
 ## Current implementation status
 
 - CLIP/FAISS candidate retrieval: implemented.
@@ -69,4 +78,6 @@ The preferred system is the best end-to-end trade-off, not the largest model.
 - Bounded `VideoWindow`: implemented.
 - Qwen3-VL adapter: implemented, opt-in.
 - InternVideo3 adapter: implemented, opt-in.
+- Model selection policy: implemented.
+- Real-frame semantic benchmark harness: implemented; requires local/GPU model execution and real frame manifest.
 - Production VLM/video-model fusion: intentionally gated on benchmark data and runtime validation.
