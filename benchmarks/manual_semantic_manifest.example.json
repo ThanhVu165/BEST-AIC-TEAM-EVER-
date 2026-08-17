@@ -1,0 +1,14 @@
+[
+  {
+    "query": "person riding a motorcycle",
+    "positive_frame": "keyframes/Lxx/Vxxx/001.jpg",
+    "negative_frame": "keyframes/Lxx/Vxxx/020.jpg",
+    "notes": "positive shows riding; negative shows person standing next to motorcycle"
+  },
+  {
+    "query": "person repairing a motorcycle",
+    "positive_frame": "keyframes/Lxx/Vxxx/101.jpg",
+    "negative_frame": "keyframes/Lxx/Vxxx/121.jpg",
+    "notes": "positive shows repair action; negative only shows motorcycle/person nearby"
+  }
+]
