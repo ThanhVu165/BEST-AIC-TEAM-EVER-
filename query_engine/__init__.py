@@ -12,14 +12,18 @@ from .semantic_reranker import (
     build_semantic_reranker,
     semantic_text,
 )
+from .video_verifier import InternVideo3Verifier, VideoVerifierConfig, build_video_verifier
 from .vlm_answering import TransformersImageAnswerExtractor
+from .vlm_verifier import Qwen3VLVerifier, VLMVerifierConfig, build_vlm_verifier
 
 __all__ = [
     "AnswerEvidence",
     "AnswerResult",
     "BaselineQueryEngine",
     "CLIPTextEncoder",
+    "InternVideo3Verifier",
     "MockQueryEngine",
+    "Qwen3VLVerifier",
     "QueryEventSpec",
     "QuerySpec",
     "SemanticQuery",
@@ -27,7 +31,11 @@ __all__ = [
     "SigLIP2ImageTextScorer",
     "TransformersImageAnswerExtractor",
     "UnavailableAnswerExtractor",
+    "VLMVerifierConfig",
+    "VideoVerifierConfig",
     "build_semantic_reranker",
+    "build_video_verifier",
+    "build_vlm_verifier",
     "decompose_query",
     "semantic_score",
     "semantic_text",
