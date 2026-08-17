@@ -21,11 +21,18 @@ def build_clip_baseline_engine(
     device: str = "auto",
     frame_top_k: int = 5000,
     video_top_k: int = 100,
-    object_weight: float = 0.10,
+    object_weight: float = 0.05,
+    metadata_weight: float = 0.03,
+    ocr_weight: float = 0.02,
+    asr_weight: float = 0.02,
     vlm_model_name: str | None = None,
     vlm_device: str | None = None,
 ) -> BaselineQueryEngine:
-    """Construct an offline-data-backed CLIP engine with optional VLM QA."""
+    """Construct the current canonical baseline runtime.
+
+    BTC CLIP remains the primary retrieval signal. Auxiliary weights are kept
+    explicit so they can be ablated and benchmarked independently.
+    """
     clip_store = FAISSFrameStore(index_path=index_path, mapping_path=mapping_path)
     clip_store.load()
     datastore = LocalDataStore(db_path=db_path, clip_index=clip_store)
@@ -36,6 +43,9 @@ def build_clip_baseline_engine(
         frame_top_k=frame_top_k,
         video_top_k=video_top_k,
         object_weight=object_weight,
+        metadata_weight=metadata_weight,
+        ocr_weight=ocr_weight,
+        asr_weight=asr_weight,
     )
     answer_extractor = None
     if vlm_model_name:
