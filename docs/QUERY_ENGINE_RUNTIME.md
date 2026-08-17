@@ -3,94 +3,99 @@
 The Query Engine branch consumes a local Batch 1 data package. The large
 video dataset, SQLite database, FAISS index, and model weights stay outside Git.
 
-## Runtime boundary
+## Canonical runtime boundary
 
 ```text
-Natural-language query
+Natural-language / structured query
         |
         v
-CLIP text encoder
+Query Understanding
         |
         v
-FAISS frame retrieval
+BTC CLIP candidate retrieval
         |
-        +--> KIS: frame hypotheses -> semantic keyframe proxy
+        v
+Multimodal evidence collection
         |
-        +--> QA: video/frame candidates -> optional VLM answer extractor
+        v
+Video-level aggregation / ranking
         |
-        +--> TRAKE: event-wise retrieval -> common-video filtering -> one frame/event
+        v
+Temporal localization
+        |
+        v
+Semantic keyframe alignment
+        |
+        +--> KIS
+        +--> QA
+        +--> TRAKE
+        |
+        v
+Final candidate ranking
+        |
+        v
+Top-100
 ```
 
-The current temporal stage is intentionally conservative. It ranks retrieved
-source frames and never invents a frame ID or event boundary. A learned temporal
-grounder can replace that stage later.
+The current Batch 1 implementation provides the retrieval, evidence and
+sequence-alignment baseline. Fine-grained temporal grounding on original video
+frames and learned semantic verification remain explicit research stages; the
+system must not represent the sparse-keyframe proxy as equivalent to exact BTC
+temporal localization.
 
 ## Batch 1 integration
 
-The runtime expects three local artifacts:
+The runtime expects:
 
-- SQLite database containing `videos` and `frames` (and optionally `objects`)
+- SQLite database containing `videos`, `frames`, `objects`, `metadata`, and
+  optional `ocr`/`asr_segments`
 - FAISS frame index
 - JSON mapping whose array position is the deterministic FAISS internal ID
+- Every mapping entry to preserve `video_id`, `keyframe_n`, and original
+  source `frame_id`
 
-Every mapping entry must contain `video_id` and the original `frame_id`.
+Validate these artifacts before running retrieval. The local data package is
+not uploaded by the runtime.
 
-Validate these artifacts before running retrieval:
+## Retrieval design
 
-```powershell
-python scripts/validate_batch1.py `
-  --db .\database\aic2026.sqlite `
-  --index .\indexes\clip\frame.faiss `
-  --mapping .\indexes\clip\frame_mapping.json
-```
+BTC-provided CLIP ViT-B/32 remains the primary dense retrieval signal. Auxiliary
+signals are collected independently:
 
-The validator checks FAISS/index alignment and that every mapped source frame
-exists in SQLite. It reads local data only and does not upload anything.
+- Objects: entity evidence only
+- Metadata: video-level textual evidence
+- OCR: frame-level textual evidence
+- ASR: video-level speech evidence
 
-## Evaluation
+The weights are explicit runtime parameters so each signal can be ablated and
+benchmarked rather than treated as a fixed BTC requirement.
 
-Prepare a JSONL file where each row is a `QueryRequest` payload plus either
-`relevant_video_ids` or `relevant_video_id`.
+## Temporal design
 
-```powershell
-python scripts/evaluate_queries.py `
-  --queries .\local\queries.jsonl `
-  --db .\database\aic2026.sqlite `
-  --index .\indexes\clip\frame.faiss `
-  --mapping .\indexes\clip\frame_mapping.json
-```
+The current temporal module has two distinct roles:
 
-The evaluator reports `R@1`, `R@5`, `R@20`, `R@50`, `R@100`, and their mean as a
-video-level retrieval `FinalScore`. This is an engineering baseline, not a
-claim that it reproduces the official task evaluator.
+1. **Proxy selection** — rank already retrieved source-frame hypotheses.
+2. **TRAKE sequence alignment** — use dynamic programming to preserve ordered
+event frame progression.
 
-## API runtime
-
-The FastAPI service defaults to the mock engine for UI/contract tests.
-To use the real local retrieval runtime, configure:
-
-```text
-AIC_ENGINE=clip
-AIC_DB_PATH=<local SQLite path>
-AIC_CLIP_INDEX=<local FAISS index>
-AIC_CLIP_MAPPING=<local mapping JSON>
-AIC_CLIP_MODEL=openai/clip-vit-base-patch32
-AIC_DEVICE=auto
-```
-
-For optional QA VLM inference, additionally set:
-
-```text
-AIC_VLM_MODEL=<benchmarked image-text model>
-AIC_VLM_DEVICE=auto
-```
-
-No VLM is selected as the competition default until it is benchmarked on the
-actual AIC QA queries.
+This is not yet fine temporal localization. Exact event grounding must later
+search/refine the original video around coarse candidate windows, especially
+for TRAKE intervals that can be narrower than 10 source frames.
 
 ## QA answer extraction
 
-`BaselineQueryEngine` accepts an `AnswerExtractor`. Without a configured model
-it returns an explicit unavailable status and never fabricates an answer from
-query text alone. `TransformersImageAnswerExtractor` provides a configurable
-Transformers adapter for local model benchmarking.
+`BaselineQueryEngine` requires a real `AnswerExtractor` for competition-grade
+Q&A. Without one, it returns an explicit `model_unavailable` status and never
+fabricates an answer. `TransformersImageAnswerExtractor` is a configurable
+benchmark adapter; no model is assumed to be the final competition default
+until measured on the actual task queries.
+
+## Evaluation
+
+Engineering evaluation should report:
+
+`R@1`, `R@5`, `R@20`, `R@50`, `R@100`, and `Final Score`.
+
+When authorized task-level reference annotations are available, use the
+competition-aligned evaluator. Local `ground_truth.json` must not be silently
+treated as official BTC evaluation ground truth.
