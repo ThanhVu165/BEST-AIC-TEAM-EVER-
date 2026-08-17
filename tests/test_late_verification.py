@@ -13,15 +13,20 @@ class FakeVerifier:
 
 
 class FakeStore:
+    def __init__(self, video_path):
+        self.video_path = video_path
+
     def get_video(self, video_id):
-        return SimpleNamespace(path="/tmp/video.mp4", fps=25.0)
+        return SimpleNamespace(path=self.video_path, fps=25.0)
 
 
-def test_disabled_late_verification_is_noop():
+def test_disabled_late_verification_is_noop(tmp_path):
     verifier = FakeVerifier()
+    video_path = tmp_path / "video.mp4"
+    video_path.touch()
     scores = verify_candidate_windows(
         [SimpleNamespace(video_id="v1", frame_id=10)],
-        datastore=FakeStore(),
+        datastore=FakeStore(str(video_path)),
         query="person riding motorcycle",
         verifier=verifier,
         config=LateVerificationConfig(enabled=False),
@@ -30,8 +35,10 @@ def test_disabled_late_verification_is_noop():
     assert verifier.calls == []
 
 
-def test_candidate_limit_and_score_are_enforced(monkeypatch):
+def test_candidate_limit_and_score_are_enforced(monkeypatch, tmp_path):
     verifier = FakeVerifier()
+    video_path = tmp_path / "video.mp4"
+    video_path.touch()
     monkeypatch.setattr(
         "query_engine.late_verification.materialize_window",
         lambda window: "/tmp/window.mp4",
@@ -44,7 +51,7 @@ def test_candidate_limit_and_score_are_enforced(monkeypatch):
     ]
     scores = verify_candidate_windows(
         candidates,
-        datastore=FakeStore(),
+        datastore=FakeStore(str(video_path)),
         query="person riding motorcycle",
         verifier=verifier,
         config=LateVerificationConfig(enabled=True, candidate_limit=2),
