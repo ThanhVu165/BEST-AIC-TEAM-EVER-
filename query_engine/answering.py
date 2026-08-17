@@ -7,15 +7,16 @@ and hardware are deployment concerns.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Protocol
+from typing import Any, Protocol
 
 
 @dataclass(frozen=True)
 class AnswerEvidence:
     video_id: str
     frame_id: int
-    frame_path: str
+    frame_path: str | None
     question: str
+    image: Any | None = None
 
 
 @dataclass(frozen=True)
