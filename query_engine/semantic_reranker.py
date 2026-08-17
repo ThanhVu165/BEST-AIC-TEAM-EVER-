@@ -29,6 +29,7 @@ class SemanticRerankConfig:
     model_id: str = "google/siglip2-base-patch16-256"
     candidate_limit: int = 50
     weight: float = 0.15
+    normalize_scores: bool = True
 
     def __post_init__(self) -> None:
         if self.candidate_limit <= 0:
