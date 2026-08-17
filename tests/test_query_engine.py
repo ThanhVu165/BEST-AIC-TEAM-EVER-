@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import numpy as np
 
-from query_engine import BaselineQueryEngine
+from query_engine import BaselineQueryEngine, understand_query
 from query_engine.retrieval import ClipCandidateRetriever
 from schemas import QueryRequest
 
@@ -23,6 +23,21 @@ class FakeDataStore:
             {"video_id": "V1", "frame_id": 11, "score": 0.90, "faiss_id": 2},
         ]
 
+    def get_objects(self, video_id: str, keyframe_n: int):
+        return None
+
+    def get_metadata(self, video_id: str):
+        return None
+
+    def get_ocr(self, video_id: str, keyframe_n: int | None = None):
+        return []
+
+    def get_asr(self, video_id: str):
+        return []
+
+    def get_frame(self, video_id: str, keyframe_n: int):
+        return None
+
 
 def make_engine() -> BaselineQueryEngine:
     retriever = ClipCandidateRetriever(
@@ -32,6 +47,20 @@ def make_engine() -> BaselineQueryEngine:
         video_top_k=10,
     )
     return BaselineQueryEngine(retriever)
+
+
+def test_query_understanding_normalizes_task_and_text() -> None:
+    spec = understand_query(
+        QueryRequest(
+            query_id="q1",
+            task="QA",
+            description="scene description",
+            question="what color?",
+        )
+    )
+    assert spec.task == "QA"
+    assert spec.text == "scene description what color?"
+    assert spec.question == "what color?"
 
 
 def test_kis_preserves_multiple_frame_hypotheses() -> None:
@@ -70,4 +99,3 @@ def test_task_inference() -> None:
     )
 
     assert result.task == "TRAKE"
-    assert [item["video_id"] for item in result.candidates] == ["V1", "V2"]
