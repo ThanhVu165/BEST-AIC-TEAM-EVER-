@@ -64,6 +64,7 @@ target-version = "py310"
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+pythonpath = ["."]
 
 [tool.setuptools.packages.find]
 include = ["schemas*", "data_layer*", "video_pipeline*", "query_engine*", "api*", "ui*"]
