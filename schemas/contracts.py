@@ -106,7 +106,7 @@ class Candidate(BaseModel):
     retrieval_score: float | None = None
     temporal_score: float | None = None
     rerank_score: float | None = None
-    evidence: CandidateEvidence = Field(default_factory=CandidateEvidence)
+    evidence: dict[str, Any] | CandidateEvidence = Field(default_factory=dict)
 
 
 class KISResult(BaseModel):
