@@ -10,6 +10,7 @@ from .interfaces import QueryEngine
 from .query_understanding import QuerySpec, understand_query
 from .ranking import RankingEvidence, diversify_candidates, rerank_candidates
 from .retrieval import ClipCandidateRetriever, RetrievalHit
+from .semantic_reranker import ImageTextScorer, SemanticRerankConfig, build_semantic_reranker, semantic_text
 from .temporal import (
     FrameEvidence,
     fine_localize_source_frames,
@@ -19,7 +20,7 @@ from .temporal import (
 
 
 class BaselineQueryEngine(QueryEngine):
-    """Canonical pipeline with retrieval, reranking, temporal and task stages."""
+    """Canonical pipeline with pluggable model-based semantic reranking."""
 
     def __init__(
         self,
@@ -27,6 +28,8 @@ class BaselineQueryEngine(QueryEngine):
         answer_extractor: AnswerExtractor | None = None,
         *,
         image_encoder: Any | None = None,
+        semantic_scorer: ImageTextScorer | None = None,
+        semantic_config: SemanticRerankConfig | None = None,
         final_limit: int = 100,
         max_kis_candidates_per_video: int = 10,
         fine_temporal_anchors: int = 20,
@@ -42,6 +45,8 @@ class BaselineQueryEngine(QueryEngine):
         self.retriever = retriever
         self.answer_extractor = answer_extractor or UnavailableAnswerExtractor()
         self.image_encoder = image_encoder
+        self.semantic_config = semantic_config or SemanticRerankConfig()
+        self.semantic_scorer = semantic_scorer or build_semantic_reranker(self.semantic_config)
         self.final_limit = final_limit
         self.max_kis_candidates_per_video = max_kis_candidates_per_video
         self.fine_temporal_anchors = fine_temporal_anchors
@@ -89,6 +94,7 @@ class BaselineQueryEngine(QueryEngine):
             if previous is None or hit.score > previous.score:
                 best_hit_by_video[hit.video_id] = hit
 
+        semantic_scores = self._semantic_scores(selected, semantic_text(spec))
         ranking_inputs: list[RankingEvidence] = []
         for item in selected:
             hit = hit_by_exact_frame.get((item.video_id, item.frame_id)) or best_hit_by_video.get(item.video_id)
@@ -104,7 +110,7 @@ class BaselineQueryEngine(QueryEngine):
                     ocr_score=hit.ocr_score,
                     asr_score=hit.asr_score,
                     temporal_score=item.score,
-                    semantic_score=0.0,
+                    semantic_score=semantic_scores.get((item.video_id, item.frame_id), 0.0),
                     sources=hit.sources,
                 )
             )
@@ -131,6 +137,8 @@ class BaselineQueryEngine(QueryEngine):
                 "ocr_score": hit.ocr_score,
                 "asr_score": hit.asr_score,
                 "temporal_score": temporal_item.score if temporal_item is not None else 0.0,
+                "semantic_score": ranking.semantic_score,
+                "semantic_model": self.semantic_config.model_id if self.semantic_scorer is not None else None,
                 "rerank_score": ranking.fused_score,
                 "keyframe_n": hit.keyframe_n if temporal_item is None else temporal_item.keyframe_n,
                 "fine_temporal": temporal_item is not None and temporal_item.frame_id != hit.frame_id,
@@ -148,6 +156,40 @@ class BaselineQueryEngine(QueryEngine):
                 ).model_dump()
             )
         return results
+
+    def _semantic_scores(self, items: list[FrameEvidence], text: str) -> dict[tuple[str, int], float]:
+        """Score only the post-retrieval candidate set with the optional VLM encoder."""
+        if self.semantic_scorer is None or not items or not text.strip():
+            return {}
+        reader = getattr(self.retriever.datastore, "read_source_frames", None)
+        single_reader = getattr(self.retriever.datastore, "read_source_frame", None)
+        if reader is None and single_reader is None:
+            return {}
+
+        grouped: dict[str, list[FrameEvidence]] = {}
+        for item in items[: self.semantic_config.candidate_limit]:
+            grouped.setdefault(item.video_id, []).append(item)
+
+        scores: dict[tuple[str, int], float] = {}
+        for video_id, video_items in grouped.items():
+            frame_ids = [item.frame_id for item in video_items]
+            if reader is not None:
+                images = reader(video_id, frame_ids)
+            else:
+                images = {
+                    frame_id: single_reader(video_id, frame_id)
+                    for frame_id in frame_ids
+                }
+            valid_items = [item for item in video_items if images.get(item.frame_id) is not None]
+            if not valid_items:
+                continue
+            image_list = [images[item.frame_id] for item in valid_items]
+            values = self.semantic_scorer.score_images(image_list, text)
+            if len(values) != len(valid_items):
+                raise ValueError("semantic scorer returned an invalid number of scores")
+            for item, value in zip(valid_items, values):
+                scores[(item.video_id, item.frame_id)] = float(np_clip01(value))
+        return scores
 
     def _solve_qa(self, spec: QuerySpec) -> list[dict[str, Any]]:
         hits = self.retriever.retrieve_videos(spec)
@@ -336,3 +378,8 @@ class BaselineQueryEngine(QueryEngine):
             timestamp=frame.timestamp if frame is not None else None,
             retrieval_score=hit.score,
         )
+
+
+def np_clip01(value: float) -> float:
+    """Clamp model scores for the ranking contract without importing numpy."""
+    return max(0.0, min(1.0, float(value)))
