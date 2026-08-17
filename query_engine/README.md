@@ -14,8 +14,9 @@ Natural Language Query
          |-- metadata / objects / OCR / ASR evidence
     -> Candidate union
     -> Model-based semantic reranking
-         |-- SigLIP2 first backend
-         |-- VLM / action / relation verifier for Top-K when justified
+         |-- SigLIP2 image-text alignment
+         |-- optional VLM action/relation verification
+         |-- optional video-text model verification
     -> Temporal localization on original video
     -> Semantic keyframe selection
     -> KIS / Q&A / TRAKE solver
@@ -28,8 +29,11 @@ Do not hard-code a single model as the solution. Each expensive model must be ev
 
 | Stage | Baseline | Candidate upgrades |
 |---|---|---|
+| Query understanding | structured parser | sentence encoders / LLM decomposition / semantic paraphrases |
 | Candidate generation | BTC CLIP ViT-B/32 + FAISS | SigLIP2 / other dense encoders / multi-index union |
-| Semantic reranking | inspectable evidence baseline | **SigLIP2**, then VLM/action/relation models |
+| Semantic reranking | inspectable evidence baseline | **SigLIP2**, larger SigLIP2 variants |
+| Action/relation verification | object evidence | **Qwen2.5-VL-7B-Instruct**, other VLM/action models |
+| Video-text reranking | frame-level scoring | **InternVideo2** 1B retrieval models |
 | Temporal localization | CLIP source-frame refinement | temporal grounding / moment retrieval models |
 | TRAKE alignment | constrained DP | stronger sequence scoring / beam/Viterbi variants |
 | Q&A | answer extractor interface | VLMs with frame/window evidence |
@@ -43,9 +47,9 @@ Do not hard-code a single model as the solution. Each expensive model must be ev
 google/siglip2-base-patch16-256
 ```
 
-The checkpoint is loaded only when the backend is enabled and first used. SigLIP2 is intended for image-text retrieval and semantic understanding, and its Transformers interface supports retrieval-style text/image scoring.
+SigLIP2 is intended for image-text retrieval and semantic understanding. The full natural-language query is passed to the visual encoder so relations such as `person riding motorcycle` are not reduced to independent object tokens. Structured `entity/action/relation` fields remain inspectable auxiliary information.
 
-The full natural-language query is passed to the visual encoder so relations such as `person riding motorcycle` are not reduced to independent object tokens. Structured `entity/action/relation` fields remain inspectable auxiliary information.
+A larger checkpoint can be selected through configuration after benchmarking. SigLIP2 exposes multiple model sizes, so the implementation deliberately does not hard-code the smallest checkpoint as the permanent solution.
 
 ### Runtime principle
 
@@ -62,6 +66,69 @@ all indexed keyframes
 ```
 
 The exact candidate counts and weights must be benchmarked on the official/local dataset before being frozen.
+
+## VLM action/relation verification
+
+`query_engine/vlm_verifier.py` provides a lazy `Qwen25VLVerifier` backend using:
+
+```text
+Qwen/Qwen2.5-VL-7B-Instruct
+```
+
+It is intentionally a **late verifier**, not a corpus-wide retriever. The prompt explicitly asks the VLM to focus on actions and relations rather than object presence. This is designed for hard negatives such as:
+
+```text
+person riding motorcycle
+    vs.
+person standing beside motorcycle
+
+person repairing bicycle
+    vs.
+person riding bicycle
+```
+
+The verifier must only be applied to a small candidate set because a 7B VLM is materially more expensive than a dense encoder. Its output is normalized to `[0, 1]` and can be introduced into final fusion after benchmark validation.
+
+Qwen2.5-VL also supports video inputs and temporal reasoning, so it remains a candidate for the later Q&A / temporal-verification stage rather than being restricted to single-frame verification.
+
+## Video-level model research
+
+InternVideo2 is tracked as a separate video-text candidate because its official multi-modality implementation provides retrieval modes and 1B checkpoints. It should be evaluated as a **video/window reranker** rather than replacing the BTC FAISS index. Its English-only `1B-s2` branch and multilingual `1B-clip` branch have different text-encoder behavior; the choice must follow the query language distribution and benchmark results.
+
+The project does not vendor the InternVideo2 codebase. Keep it behind an adapter and make it an optional dependency only if an experiment demonstrates a measurable retrieval gain.
+
+## Hard-negative evaluation
+
+`tools/semantic_hard_negative_benchmark.py` defines a model-agnostic benchmark protocol:
+
+```text
+positive image-text pair
+        vs.
+hard-negative image-text pair
+```
+
+Primary metrics:
+
+- pairwise accuracy
+- mean positive-minus-negative score margin
+
+Example hard negatives should specifically target action/relation confusion, not only object mismatch. The benchmark is intended to compare CLIP, SigLIP2 variants, and future semantic backends before changing production weights.
+
+## Model governance
+
+Every new model follows this sequence:
+
+```text
+research candidate
+    -> adapter
+    -> CI-safe lazy loading
+    -> hard-negative benchmark
+    -> R@1/R@5/R@20/R@50/R@100 evaluation
+    -> latency / VRAM measurement
+    -> decision
+```
+
+A model is **not** considered production-ready merely because its paper reports strong benchmark numbers.
 
 ## First milestone
 
