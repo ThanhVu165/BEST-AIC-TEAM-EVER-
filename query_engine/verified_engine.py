@@ -1,25 +1,21 @@
 """Late-verification query-engine facade.
 
 Keeps the canonical baseline engine intact while providing an explicit,
-model-pluggable KIS cascade:
+model-pluggable cascade:
 
 CLIP/FAISS -> semantic/temporal rerank -> bounded video verification -> final rank.
-
-The expensive verifier is only evaluated on the already-ranked candidate pool.
 """
 from __future__ import annotations
 
 from typing import Any
 
-from schemas import QueryRequest
-
-from .engine import BaselineQueryEngine
 from .late_verification import LateVerificationConfig, verify_candidate_windows
+from .semantic_augmented import SemanticAugmentedQueryEngine
 from .video_verifier import VideoVerifierConfig, build_video_verifier
 
 
-class VerifiedQueryEngine(BaselineQueryEngine):
-    """Baseline engine with optional bounded video-model verification for KIS."""
+class VerifiedQueryEngine(SemanticAugmentedQueryEngine):
+    """Semantic-augmented engine with bounded video verification for KIS."""
 
     def __init__(
         self,
@@ -66,19 +62,11 @@ class VerifiedQueryEngine(BaselineQueryEngine):
             candidate["rerank_score"] = final_score
             evidence = candidate.setdefault("evidence", {})
             evidence["video_verification_score"] = verification
-            evidence["video_verification_model"] = getattr(
-                self.video_verifier_config, "model_id", None
-            )
+            evidence["video_verification_model"] = getattr(self.video_verifier_config, "model_id", None)
             evidence["video_verification_weight"] = weight
             evidence["rerank_score"] = final_score
 
-        base.sort(
-            key=lambda item: (
-                -float(item["score"]),
-                str(item["video_id"]),
-                int(item["frame_id"]),
-            )
-        )
+        base.sort(key=lambda item: (-float(item["score"]), str(item["video_id"]), int(item["frame_id"])))
         for rank, candidate in enumerate(base, start=1):
             candidate["rank"] = rank
         return base[: self.final_limit]
