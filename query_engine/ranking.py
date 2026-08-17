@@ -31,12 +31,7 @@ class RankingEvidence:
 
     @property
     def fused_score(self) -> float:
-        """Fuse independent evidence exactly once.
-
-        Semantic and expensive video verification are explicit late-stage
-        weights. The remaining evidence keeps the canonical relative
-        proportions and is renormalized so all configured weights sum to 1.
-        """
+        """Fuse independent evidence exactly once."""
         semantic_weight = self.semantic_weight
         video_weight = self.video_verification_weight
         base_weight = 1.0 - semantic_weight - video_weight
@@ -68,6 +63,11 @@ def rerank_candidates(candidates: Iterable[RankingEvidence], *, limit: int = 100
 
 
 def diversify_candidates(candidates: Iterable[RankingEvidence], *, limit: int = 100, max_per_video: int | None = None) -> list[RankingEvidence]:
+    """Select top-ranked candidates while enforcing an optional per-video cap.
+
+    The cap is a hard constraint. We do not append deferred candidates after
+    the first pass because doing so would silently violate ``max_per_video``.
+    """
     if limit <= 0:
         return []
     items = sorted(candidates, key=lambda item: (-item.fused_score, item.video_id, item.frame_id))
@@ -78,14 +78,12 @@ def diversify_candidates(candidates: Iterable[RankingEvidence], *, limit: int = 
 
     selected: list[RankingEvidence] = []
     counts: dict[str, int] = {}
-    deferred: list[RankingEvidence] = []
     for item in items:
+        if len(selected) >= limit:
+            break
         count = counts.get(item.video_id, 0)
-        if count < max_per_video and len(selected) < limit:
-            selected.append(item)
-            counts[item.video_id] = count + 1
-        else:
-            deferred.append(item)
-    if len(selected) < limit:
-        selected.extend(deferred[: limit - len(selected)])
+        if count >= max_per_video:
+            continue
+        selected.append(item)
+        counts[item.video_id] = count + 1
     return selected
