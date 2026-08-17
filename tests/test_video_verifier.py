@@ -28,7 +28,8 @@ def test_internvideo3_verifier_is_lazy():
     assert verifier._processor is None
 
 
-def test_score_parser():
+def test_score_parser_requires_explicit_label():
     assert InternVideo3Verifier._parse_score("score: 0.83") == pytest.approx(0.83)
     assert InternVideo3Verifier._parse_score("confidence=0.27") == pytest.approx(0.27)
-    assert InternVideo3Verifier._parse_score("no score") == 0.0
+    with pytest.raises(ValueError):
+        InternVideo3Verifier._parse_score("no score, frame 120")
