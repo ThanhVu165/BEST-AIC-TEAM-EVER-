@@ -21,6 +21,28 @@ ml = [
     "faiss-cpu>=1.8",
     "opencv-python>=4.9",
 ]
+ml-siglip = [
+    "torch>=2.3",
+    "torchvision>=0.18",
+    "transformers>=4.44",
+    "pillow>=10.0",
+]
+ml-vlm = [
+    "torch>=2.3",
+    "torchvision>=0.18",
+    "transformers>=4.49",
+    "accelerate>=0.34",
+    "pillow>=10.0",
+    "qwen-vl-utils>=0.0.8",
+]
+ml-video = [
+    "torch>=2.3",
+    "torchvision>=0.18",
+    "transformers>=4.49",
+    "accelerate>=0.34",
+    "opencv-python>=4.9",
+    "decord>=0.6.0",
+]
 api = [
     "fastapi>=0.112",
     "uvicorn[standard]>=0.30",
