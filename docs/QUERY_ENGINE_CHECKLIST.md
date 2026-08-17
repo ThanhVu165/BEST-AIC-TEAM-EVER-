@@ -25,15 +25,15 @@
 - [x] Deterministic source-frame temporal candidate handling
 - [x] Ordered TRAKE dynamic-programming alignment
 - [x] Temporal window grouping utilities
-- [ ] Coarse temporal search on original videos
-- [ ] Fine frame-level localization on original videos
-- [ ] Sub-10-frame event localization benchmark
+- [x] Original-video local source-frame refinement around sparse anchors
+- [x] Fine frame-level CLIP localization proxy on original videos
+- [ ] Learned temporal grounder / sub-10-frame benchmark
 
 ### Stage E — Semantic keyframe alignment
 - [x] Explicit proxy selector
 - [x] Source-frame ID preservation
+- [x] Original-video frame refinement proxy
 - [ ] Event-aware semantic keyframe scoring beyond CLIP similarity
-- [ ] Original-video frame refinement
 
 ### Stage F — Multimodal reranking
 - [x] Central inspectable score fusion
@@ -46,13 +46,13 @@
 
 ### Stage G — Task solvers
 - [x] KIS candidate generation
-- [ ] KIS fine temporal localization
+- [x] KIS source-frame fine temporal proxy
 - [x] QA evidence boundary
 - [ ] Production QA answer model
 - [ ] Answer normalization / semantic equivalence benchmark
 - [x] TRAKE common-video candidate generation
 - [x] TRAKE ordered alignment
-- [ ] TRAKE fine-grained event localization
+- [x] TRAKE source-frame fine temporal proxy
 - [ ] TRAKE sequence-level learned scoring
 
 ### Stage H — Final ranking / submission
