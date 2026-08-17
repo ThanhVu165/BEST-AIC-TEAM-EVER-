@@ -2,7 +2,7 @@
 
 This adapter is intentionally late-stage. It is not a replacement for the
 BTC CLIP/FAISS candidate generator. InternVideo3 is used when a small set of
-video windows needs stronger temporal/action reasoning.
+bounded source-video windows needs stronger temporal/action reasoning.
 """
 from __future__ import annotations
 
@@ -35,7 +35,12 @@ class VideoVerifierConfig:
 
 
 class InternVideo3Verifier:
-    """Lazy Transformers adapter for InternVideo3-8B-Instruct."""
+    """Lazy Transformers adapter for InternVideo3-8B-Instruct.
+
+    The adapter deliberately exposes only a normalized verification score to
+    the retrieval engine. Prompting and output parsing are kept here so the
+    ranking layer does not depend on a particular VLM implementation.
+    """
 
     def __init__(self, model_id: str = "yanziang/InternVideo3-8B-Instruct") -> None:
         self.model_id = model_id
@@ -50,7 +55,7 @@ class InternVideo3Verifier:
             from transformers import AutoModelForCausalLM, AutoProcessor
         except ImportError as exc:  # pragma: no cover
             raise RuntimeError(
-                "InternVideo3 requires the optional ML dependencies. Install the 'ml' extra."
+                "InternVideo3 requires the optional ML dependencies. Install the 'ml-video' extra."
             ) from exc
         self._model = AutoModelForCausalLM.from_pretrained(
             self.model_id,
@@ -67,11 +72,20 @@ class InternVideo3Verifier:
 
     @staticmethod
     def _parse_score(text: str) -> float:
-        match = re.search(r"(?:score|probability|confidence)\s*[:=]\s*(0(?:\.\d+)?|1(?:\.0+)?)", text, re.I)
-        if match:
-            return max(0.0, min(1.0, float(match.group(1))))
-        numbers = re.findall(r"(?:0(?:\.\d+)?|1(?:\.0+)?)", text)
-        return float(numbers[-1]) if numbers else 0.0
+        """Parse only an explicitly labelled normalized score.
+
+        We intentionally do not take the last arbitrary number in model text:
+        prompts and explanations can contain unrelated numbers, which would
+        otherwise silently corrupt ranking.
+        """
+        match = re.search(
+            r"(?:score|probability|confidence)\s*[:=]\s*(0(?:\.\d+)?|1(?:\.0+)?)",
+            text,
+            re.I,
+        )
+        if match is None:
+            raise ValueError("video verifier output does not contain a labelled score")
+        return max(0.0, min(1.0, float(match.group(1))))
 
     def verify(self, video_path: str, query: str, *, fps: float = 2.0) -> float:
         if not video_path:
@@ -98,7 +112,8 @@ class InternVideo3Verifier:
                     "text": (
                         "Verify whether this video depicts the event in the query. "
                         "Focus on action, interaction, temporal evidence and relations. "
-                        "Return a score from 0 to 1 in the form `score: <number>`.\n"
+                        "Return exactly one normalized score in the form `score: <number>` "
+                        "where the number is between 0 and 1.\n"
                         f"Query: {query}"
                     ),
                 },
@@ -113,7 +128,7 @@ class InternVideo3Verifier:
             return_tensors="pt",
         ).to(self._model.device)
         with torch.inference_mode():
-            output = self._model.generate(**inputs, max_new_tokens=64, use_cache=True)
+            output = self._model.generate(**inputs, max_new_tokens=32, use_cache=True)
         generated_ids = [o[len(i):] for i, o in zip(inputs.input_ids, output)]
         text = self._processor.batch_decode(generated_ids, skip_special_tokens=True)[0]
         return self._parse_score(text)
