@@ -41,8 +41,6 @@ class DataStore(ABC):
     def search_clip(self, vector: np.ndarray, top_k: int) -> list[dict[str, Any]]:
         raise NotImplementedError
 
-    # Optional multimodal extensions. They intentionally remain concrete so
-    # lightweight test doubles do not need to implement every data channel.
     def get_ocr(self, video_id: str, keyframe_n: int | None = None) -> list[OCRRecord]:
         return []
 
@@ -53,20 +51,20 @@ class DataStore(ABC):
         return None
 
     def read_source_frame(self, video_id: str, frame_id: int) -> Any | None:
-        """Return an original-video frame for fine temporal localization.
-
-        Implementations may return a NumPy RGB image or another image object
-        accepted by the configured image encoder. The default is unavailable.
-        """
+        """Return one original-video RGB frame, or ``None`` when unavailable."""
         return None
+
+    def read_source_frames(self, video_id: str, frame_ids: list[int]) -> dict[int, Any]:
+        """Optional batch source-frame reader. Default falls back to single reads."""
+        return {
+            frame_id: frame
+            for frame_id in frame_ids
+            if (frame := self.read_source_frame(video_id, frame_id)) is not None
+        }
 
 
 class LocalDataStore(DataStore):
-    """SQLite + optional FAISS implementation for a single-machine deployment.
-
-    OCR/ASR/metadata and source-video accessors are local extensions. Query
-    Engine still talks only to this boundary and never opens SQLite directly.
-    """
+    """SQLite + optional FAISS implementation for a single-machine deployment."""
 
     def __init__(self, db_path: str | Path, clip_index: Any | None = None):
         self.db_path = Path(db_path)
@@ -95,20 +93,16 @@ class LocalDataStore(DataStore):
         return FrameRecord(**dict(row)) if row else None
 
     def get_frame_by_id(self, video_id: str, frame_id: int) -> FrameRecord | None:
-        """Return the keyframe record whose original-video frame_id matches."""
         with self._connect() as conn:
             row = conn.execute(
                 """SELECT * FROM frames
                    WHERE video_id = ? AND frame_id = ?
-                   ORDER BY keyframe_n
-                   LIMIT 1""",
+                   ORDER BY keyframe_n LIMIT 1""",
                 (video_id, frame_id),
             ).fetchone()
         return FrameRecord(**dict(row)) if row else None
 
-    def get_frames_in_range(
-        self, video_id: str, start_frame: int, end_frame: int
-    ) -> list[FrameRecord]:
+    def get_frames_in_range(self, video_id: str, start_frame: int, end_frame: int) -> list[FrameRecord]:
         if end_frame < start_frame:
             return []
         with self._connect() as conn:
@@ -134,12 +128,7 @@ class LocalDataStore(DataStore):
             {
                 "label": row["label"],
                 "confidence": float(row["confidence"]),
-                "bbox": [
-                    float(row["x1"]),
-                    float(row["y1"]),
-                    float(row["x2"]),
-                    float(row["y2"]),
-                ],
+                "bbox": [float(row["x1"]), float(row["y1"]), float(row["x2"]), float(row["y2"])],
             }
             for row in rows
         ]
@@ -173,9 +162,7 @@ class LocalDataStore(DataStore):
 
     def get_metadata(self, video_id: str) -> dict[str, Any] | None:
         with self._connect() as conn:
-            row = conn.execute(
-                "SELECT raw_json FROM metadata WHERE video_id = ?", (video_id,)
-            ).fetchone()
+            row = conn.execute("SELECT raw_json FROM metadata WHERE video_id = ?", (video_id,)).fetchone()
         if row is None:
             return None
         try:
@@ -184,34 +171,47 @@ class LocalDataStore(DataStore):
             return None
         return payload if isinstance(payload, dict) else None
 
-    def read_source_frame(self, video_id: str, frame_id: int) -> Any | None:
-        if frame_id < 0:
-            raise ValueError("frame_id must be >= 0")
+    def _video_path(self, video_id: str) -> Path | None:
         video = self.get_video(video_id)
         if video is None:
             return None
-        video_path = Path(video.path)
-        if not video_path.is_file() and not video_path.is_absolute():
-            video_path = self.db_path.parent / video_path
-        if not video_path.is_file():
-            return None
+        path = Path(video.path)
+        if not path.is_file() and not path.is_absolute():
+            path = self.db_path.parent / path
+        return path if path.is_file() else None
 
+    def read_source_frame(self, video_id: str, frame_id: int) -> Any | None:
+        frames = self.read_source_frames(video_id, [frame_id])
+        return frames.get(frame_id)
+
+    def read_source_frames(self, video_id: str, frame_ids: list[int]) -> dict[int, Any]:
+        if not frame_ids:
+            return {}
+        if any(frame_id < 0 for frame_id in frame_ids):
+            raise ValueError("frame_id must be >= 0")
+        path = self._video_path(video_id)
+        if path is None:
+            return {}
         try:
             import cv2  # type: ignore
         except ImportError as exc:  # pragma: no cover - optional local runtime
             raise RuntimeError("OpenCV is required for source-frame temporal localization") from exc
 
-        capture = cv2.VideoCapture(str(video_path))
+        wanted = sorted(set(int(frame_id) for frame_id in frame_ids))
+        output: dict[int, Any] = {}
+        capture = cv2.VideoCapture(str(path))
         try:
             if not capture.isOpened():
-                return None
-            capture.set(cv2.CAP_PROP_POS_FRAMES, int(frame_id))
-            ok, frame = capture.read()
-            if not ok or frame is None:
-                return None
-            return cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+                return {}
+            for frame_id in wanted:
+                capture.set(cv2.CAP_PROP_POS_FRAMES, frame_id)
+                ok, frame = capture.read()
+                if not ok or frame is None:
+                    continue
+                output[frame_id] = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
         finally:
             capture.release()
+        return output
 
     def search_clip(self, vector: np.ndarray, top_k: int) -> list[dict[str, Any]]:
         if self.clip_index is None:
