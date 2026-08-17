@@ -16,20 +16,33 @@ class RankingEvidence:
     asr_score: float = 0.0
     temporal_score: float = 0.0
     semantic_score: float = 0.0
+    semantic_weight: float = 0.02
     sources: tuple[str, ...] = field(default_factory=tuple)
+
+    def __post_init__(self) -> None:
+        if not 0.0 <= self.semantic_weight <= 1.0:
+            raise ValueError("semantic_weight must be in [0, 1]")
 
     @property
     def fused_score(self) -> float:
-        """Fuse independent evidence once, with CLIP retrieval as the anchor."""
-        return (
+        """Fuse independent evidence exactly once.
+
+        The semantic weight is configurable.  The remaining evidence keeps
+        the canonical relative proportions and is renormalized so the total
+        weight remains 1.0.  This prevents a newly added semantic model from
+        silently changing the overall score scale or being ignored by the
+        configured weight.
+        """
+        base_weight = 1.0 - self.semantic_weight
+        canonical_base = (
             0.82 * self.retrieval_score
             + 0.05 * self.object_score
             + 0.04 * self.metadata_score
             + 0.02 * self.ocr_score
             + 0.02 * self.asr_score
             + 0.03 * self.temporal_score
-            + 0.02 * self.semantic_score
-        )
+        ) / 0.98
+        return base_weight * canonical_base + self.semantic_weight * self.semantic_score
 
 
 def rerank_candidates(candidates: Iterable[RankingEvidence], *, limit: int = 100) -> list[RankingEvidence]:
