@@ -6,20 +6,36 @@ through environment variables. No dataset or model path is hard-coded.
 """
 from __future__ import annotations
 
+import io
 import os
 from pathlib import Path
 
 from fastapi import FastAPI, HTTPException
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import FileResponse, Response
 
+from api.submission import build_submission_zip
 from query_engine import BaselineQueryEngine, MockQueryEngine
 from query_engine.runtime import build_clip_baseline_engine
 from schemas import QueryRequest, SearchResponse, SubmissionRequest, SubmissionResponse
+
+OUTPUT_DIR = Path(os.getenv("AIC_OUTPUT_DIR", "outputs"))
 
 app = FastAPI(
     title="AIC 2026 Video Retrieval API",
     version="1.0.0",
     docs_url="/docs",
     redoc_url="/redoc",
+)
+
+# The UI is a separate local process (Streamlit dev server / static page),
+# so it talks to this API cross-origin. Local-only convenience, not exposed
+# beyond localhost by default.
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_methods=["*"],
+    allow_headers=["*"],
 )
 
 
@@ -110,6 +126,39 @@ def get_frame(video_id: str, frame_id: int) -> dict[str, object]:
     raise HTTPException(status_code=404, detail=f"Source frame not found: {video_id}/{frame_id}")
 
 
+@app.get("/api/v1/video/{video_id}/frame/{frame_id}/image")
+def get_frame_image(video_id: str, frame_id: int) -> Response:
+    """Return the actual JPEG bytes for a frame. UI never touches disk paths."""
+    datastore = getattr(getattr(engine, "retriever", None), "datastore", None)
+    if datastore is None:
+        raise HTTPException(status_code=404, detail="Data store is not connected")
+
+    # Prefer the stored keyframe file (exact BTC keyframe asset) when available.
+    getter = getattr(datastore, "get_frame_by_id", None)
+    record = getter(video_id, frame_id) if getter is not None else None
+    if record is not None:
+        path = Path(record.path)
+        if not path.is_absolute():
+            path = datastore.db_path.parent / path
+        if path.is_file():
+            return FileResponse(path, media_type="image/jpeg")
+
+    # Fall back to decoding the exact frame straight out of the source video.
+    reader = getattr(datastore, "read_source_frame", None)
+    frame = reader(video_id, frame_id) if reader is not None else None
+    if frame is not None:
+        try:
+            import cv2  # type: ignore
+        except ImportError as exc:  # pragma: no cover - optional local runtime
+            raise HTTPException(status_code=500, detail="OpenCV not available to encode frame") from exc
+        bgr = cv2.cvtColor(frame, cv2.COLOR_RGB2BGR)
+        ok, buf = cv2.imencode(".jpg", bgr)
+        if ok:
+            return Response(content=io.BytesIO(buf.tobytes()).getvalue(), media_type="image/jpeg")
+
+    raise HTTPException(status_code=404, detail=f"No image available for {video_id}/{frame_id}")
+
+
 @app.post("/api/v1/submission", response_model=SubmissionResponse)
 def create_submission(request: SubmissionRequest) -> SubmissionResponse:
     missing = [query_id for query_id in request.query_ids if query_id not in _results]
@@ -118,4 +167,19 @@ def create_submission(request: SubmissionRequest) -> SubmissionResponse:
             status_code=404,
             detail=f"No result stored for query_ids: {missing}",
         )
-    return SubmissionResponse(status="completed", file_name="submission_mock.json")
+    results = [_results[query_id] for query_id in request.query_ids]
+    try:
+        zip_path = build_submission_zip(results, OUTPUT_DIR)
+    except ValueError as exc:
+        return SubmissionResponse(status="failed", file_name=None, error=str(exc))
+    return SubmissionResponse(status="completed", file_name=zip_path.name)
+
+
+@app.get("/api/v1/submission/{file_name}")
+def download_submission(file_name: str) -> FileResponse:
+    if "/" in file_name or "\\" in file_name or not file_name.endswith(".zip"):
+        raise HTTPException(status_code=400, detail="Invalid submission file name")
+    path = OUTPUT_DIR / file_name
+    if not path.is_file():
+        raise HTTPException(status_code=404, detail="Submission file not found")
+    return FileResponse(path, media_type="application/zip", filename=file_name)
