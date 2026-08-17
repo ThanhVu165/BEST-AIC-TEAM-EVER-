@@ -1,19 +1,19 @@
-"""CLIP text encoder adapter for BTC ViT-B/32 frame features.
-
-The adapter is lazy: importing the Query Engine does not require model weights.
-At inference time it uses the Hugging Face OpenAI CLIP ViT-B/32 checkpoint and
-L2-normalizes the text embedding so it can be compared with normalized image
-features using inner-product/cosine retrieval.
-"""
+"""CLIP ViT-B/32 adapter for text and source-frame embeddings."""
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, Sequence
 
 import numpy as np
 
 
 class CLIPTextEncoder:
-    """Encode text with OpenAI CLIP ViT-B/32 using a replaceable model adapter."""
+    """Encode text and images with one shared OpenAI CLIP ViT-B/32 model.
+
+    The text ``encode`` API remains compatible with the existing retriever. The
+    image methods are used only by the fine temporal stage, which lets the
+    system compare dense source-video frames against the query without loading
+    a second copy of CLIP.
+    """
 
     def __init__(
         self,
@@ -24,6 +24,7 @@ class CLIPTextEncoder:
         self.model_name = model_name
         self.device = device
         self._tokenizer: Any | None = None
+        self._image_processor: Any | None = None
         self._model: Any | None = None
         self._torch: Any | None = None
 
@@ -33,7 +34,7 @@ class CLIPTextEncoder:
 
         try:
             import torch
-            from transformers import CLIPModel, CLIPTokenizerFast
+            from transformers import CLIPImageProcessor, CLIPModel, CLIPTokenizerFast
         except ImportError as exc:  # pragma: no cover - depends on optional ML extra
             raise RuntimeError(
                 "CLIPTextEncoder requires the optional 'ml' dependencies "
@@ -46,6 +47,7 @@ class CLIPTextEncoder:
 
         self._torch = torch
         self._tokenizer = CLIPTokenizerFast.from_pretrained(self.model_name)
+        self._image_processor = CLIPImageProcessor.from_pretrained(self.model_name)
         self._model = CLIPModel.from_pretrained(self.model_name)
         self._model.to(device)
         self._model.eval()
@@ -70,14 +72,38 @@ class CLIPTextEncoder:
         tokens = {name: value.to(self.device) for name, value in tokens.items()}
 
         with self._torch.inference_mode():
-            # Recent transformers releases may return a ModelOutput from
-            # get_text_features() instead of the projected tensor expected by
-            # this adapter. Build the CLIP text embedding explicitly so the
-            # output remains the same 512-D projected space as BTC's ViT-B/32
-            # image features.
             text_outputs = self._model.text_model(**tokens)
             pooled = text_outputs.pooler_output
             features = self._model.text_projection(pooled)
             features = features / features.norm(dim=-1, keepdim=True).clamp_min(1e-12)
 
         return features[0].detach().cpu().numpy().astype(np.float32, copy=False)
+
+    def encode_images(self, images: Sequence[Any], *, batch_size: int = 16) -> np.ndarray:
+        """Encode RGB image arrays/PIL images into the same normalized CLIP space."""
+        if not images:
+            return np.empty((0, 0), dtype=np.float32)
+        if batch_size <= 0:
+            raise ValueError("batch_size must be > 0")
+
+        self._load()
+        assert self._torch is not None
+        assert self._image_processor is not None
+        assert self._model is not None
+
+        chunks: list[np.ndarray] = []
+        for start in range(0, len(images), batch_size):
+            batch = list(images[start : start + batch_size])
+            inputs = self._image_processor(images=batch, return_tensors="pt")
+            pixel_values = inputs["pixel_values"].to(self.device)
+            with self._torch.inference_mode():
+                features = self._model.vision_model(pixel_values=pixel_values)
+                pooled = features.pooler_output
+                projected = self._model.visual_projection(pooled)
+                projected = projected / projected.norm(dim=-1, keepdim=True).clamp_min(1e-12)
+            chunks.append(projected.detach().cpu().numpy().astype(np.float32, copy=False))
+        return np.concatenate(chunks, axis=0)
+
+    def encode_image(self, image: Any) -> np.ndarray:
+        """Encode one RGB image."""
+        return self.encode_images([image], batch_size=1)[0]
