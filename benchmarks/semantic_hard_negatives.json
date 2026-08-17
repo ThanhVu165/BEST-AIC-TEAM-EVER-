@@ -1,0 +1,10 @@
+[
+  {"query":"a person riding a motorcycle","positive":"person riding motorcycle","negative":"person standing next to motorcycle"},
+  {"query":"a person riding a motorcycle","positive":"person riding motorcycle","negative":"person repairing motorcycle"},
+  {"query":"a person riding a motorcycle","positive":"person riding motorcycle","negative":"person pushing motorcycle"},
+  {"query":"a person riding a motorcycle","positive":"person riding motorcycle","negative":"person riding bicycle"},
+  {"query":"a person opening a door","positive":"person opening door","negative":"person standing by door"},
+  {"query":"a person holding a cup","positive":"person holding cup","negative":"person looking at cup"},
+  {"query":"a person sitting on a chair","positive":"person sitting on chair","negative":"person standing beside chair"},
+  {"query":"a person walking toward a car","positive":"person walking toward car","negative":"person standing near car"}
+]
