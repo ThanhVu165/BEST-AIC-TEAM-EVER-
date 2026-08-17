@@ -37,11 +37,11 @@ Final candidate ranking
 Top-100
 ```
 
-The current Batch 1 implementation provides the retrieval, evidence and
-sequence-alignment baseline. Fine-grained temporal grounding on original video
-frames and learned semantic verification remain explicit research stages; the
-system must not represent the sparse-keyframe proxy as equivalent to exact BTC
-temporal localization.
+The current Batch 1 implementation provides retrieval, inspectable multimodal
+evidence, deterministic ranking, source-frame temporal refinement and TRAKE
+sequence alignment. Learned temporal grounding and learned semantic
+verification remain explicit research stages; the CLIP source-frame proxy must
+not be represented as equivalent to a learned BTC temporal localizer.
 
 ## Batch 1 integration
 
@@ -53,6 +53,8 @@ The runtime expects:
 - JSON mapping whose array position is the deterministic FAISS internal ID
 - Every mapping entry to preserve `video_id`, `keyframe_n`, and original
   source `frame_id`
+- Original videos reachable through `VideoRecord.path` for fine source-frame
+  refinement
 
 Validate these artifacts before running retrieval. The local data package is
 not uploaded by the runtime.
@@ -72,23 +74,28 @@ benchmarked rather than treated as a fixed BTC requirement.
 
 ## Temporal design
 
-The current temporal module has two distinct roles:
+The temporal module has three roles:
 
-1. **Proxy selection** — rank already retrieved source-frame hypotheses.
-2. **TRAKE sequence alignment** — use dynamic programming to preserve ordered
-event frame progression.
+1. **Sparse proxy selection** — rank retrieved keyframe/source-frame hypotheses.
+2. **Source-frame refinement** — for a small number of top anchors, decode a
+   configurable neighborhood from the original video and compare each frame
+   with the query using the same CLIP embedding space. This can return a
+   non-keyframe `frame_id`.
+3. **TRAKE sequence alignment** — use dynamic programming to preserve strict
+   ordered event progression across the selected event frames.
 
-This is not yet fine temporal localization. Exact event grounding must later
-search/refine the original video around coarse candidate windows, especially
+The source-frame stage is a strong deterministic CLIP proxy, not a learned
+fine temporal grounder. Its `radius` and anchor count are runtime parameters
+and must be benchmarked on the actual AIC queries. This distinction matters
 for TRAKE intervals that can be narrower than 10 source frames.
 
 ## QA answer extraction
 
 `BaselineQueryEngine` requires a real `AnswerExtractor` for competition-grade
 Q&A. Without one, it returns an explicit `model_unavailable` status and never
-fabricates an answer. `TransformersImageAnswerExtractor` is a configurable
-benchmark adapter; no model is assumed to be the final competition default
-until measured on the actual task queries.
+fabricates an answer. `TransformersImageAnswerExtractor` can consume either a
+keyframe path or a decoded source-video frame; no model is assumed to be the
+final competition default until measured on the actual task queries.
 
 ## Evaluation
 
