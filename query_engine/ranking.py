@@ -16,24 +16,30 @@ class RankingEvidence:
     asr_score: float = 0.0
     temporal_score: float = 0.0
     semantic_score: float = 0.0
+    video_verification_score: float = 0.0
     semantic_weight: float = 0.02
+    video_verification_weight: float = 0.0
     sources: tuple[str, ...] = field(default_factory=tuple)
 
     def __post_init__(self) -> None:
         if not 0.0 <= self.semantic_weight <= 1.0:
             raise ValueError("semantic_weight must be in [0, 1]")
+        if not 0.0 <= self.video_verification_weight <= 1.0:
+            raise ValueError("video_verification_weight must be in [0, 1]")
+        if self.semantic_weight + self.video_verification_weight > 1.0:
+            raise ValueError("semantic_weight + video_verification_weight must be <= 1")
 
     @property
     def fused_score(self) -> float:
         """Fuse independent evidence exactly once.
 
-        The semantic weight is configurable.  The remaining evidence keeps
-        the canonical relative proportions and is renormalized so the total
-        weight remains 1.0.  This prevents a newly added semantic model from
-        silently changing the overall score scale or being ignored by the
-        configured weight.
+        Semantic and expensive video verification are explicit late-stage
+        weights. The remaining evidence keeps the canonical relative
+        proportions and is renormalized so all configured weights sum to 1.
         """
-        base_weight = 1.0 - self.semantic_weight
+        semantic_weight = self.semantic_weight
+        video_weight = self.video_verification_weight
+        base_weight = 1.0 - semantic_weight - video_weight
         canonical_base = (
             0.82 * self.retrieval_score
             + 0.05 * self.object_score
@@ -42,7 +48,11 @@ class RankingEvidence:
             + 0.02 * self.asr_score
             + 0.03 * self.temporal_score
         ) / 0.98
-        return base_weight * canonical_base + self.semantic_weight * self.semantic_score
+        return (
+            base_weight * canonical_base
+            + semantic_weight * self.semantic_score
+            + video_weight * self.video_verification_score
+        )
 
 
 def rerank_candidates(candidates: Iterable[RankingEvidence], *, limit: int = 100) -> list[RankingEvidence]:
