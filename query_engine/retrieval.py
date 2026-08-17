@@ -3,6 +3,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from typing import Any, Protocol
+import re
 
 import numpy as np
 
@@ -30,27 +31,17 @@ class RetrievalHit:
     asr_score: float = 0.0
     retrieval_score: float | None = None
 
+    @property
+    def raw_score(self) -> float:
+        return float(self.retrieval_score if self.retrieval_score is not None else self.score)
+
 
 class ClipCandidateRetriever:
-    """Generate CLIP candidates; auxiliary signals remain raw evidence.
+    """Generate CLIP candidates; auxiliary signals remain raw evidence."""
 
-    Fusion is intentionally deferred to the ranking stage. This prevents
-    object/metadata/OCR/ASR evidence from being counted once here and again in
-    the final reranker.
-    """
-
-    def __init__(
-        self,
-        datastore: DataStore,
-        embedder: QueryEmbedder,
-        *,
-        frame_top_k: int = 5000,
-        video_top_k: int = 100,
-        object_weight: float = 0.05,
-        metadata_weight: float = 0.03,
-        ocr_weight: float = 0.02,
-        asr_weight: float = 0.02,
-    ) -> None:
+    def __init__(self, datastore: DataStore, embedder: QueryEmbedder, *, frame_top_k: int = 5000,
+                 video_top_k: int = 100, object_weight: float = 0.05, metadata_weight: float = 0.03,
+                 ocr_weight: float = 0.02, asr_weight: float = 0.02) -> None:
         if frame_top_k <= 0 or video_top_k <= 0:
             raise ValueError("frame_top_k and video_top_k must be > 0")
         weights = (object_weight, metadata_weight, ocr_weight, asr_weight)
@@ -62,8 +53,6 @@ class ClipCandidateRetriever:
         self.embedder = embedder
         self.frame_top_k = frame_top_k
         self.video_top_k = video_top_k
-        # Retained for backwards-compatible configuration/diagnostics. Ranking
-        # owns the actual fusion now.
         self.object_weight = object_weight
         self.metadata_weight = metadata_weight
         self.ocr_weight = ocr_weight
@@ -84,15 +73,12 @@ class ClipCandidateRetriever:
         grouped: dict[str, list[RetrievalHit]] = {}
         for hit in frame_hits:
             grouped.setdefault(hit.video_id, []).append(hit)
-
         representatives: list[tuple[RetrievalHit, float]] = []
         for hits in grouped.values():
-            ordered = sorted(hits, key=lambda item: (-item.retrieval_score_value, item.frame_id, item.keyframe_n or 0))
+            ordered = sorted(hits, key=lambda item: (-item.raw_score, item.frame_id, item.keyframe_n or 0))
             best = ordered[0]
-            support = float(np.mean([item.retrieval_score_value for item in ordered[:3]]))
-            video_rank_score = 0.97 * best.retrieval_score_value + 0.03 * support
-            representatives.append((best, video_rank_score))
-
+            support = float(np.mean([item.raw_score for item in ordered[:3]]))
+            representatives.append((best, 0.97 * best.raw_score + 0.03 * support))
         representatives.sort(key=lambda item: (-item[1], item[0].video_id, item[0].frame_id, item[0].keyframe_n or 0))
         return [item[0] for item in representatives[: self.video_top_k]]
 
@@ -112,30 +98,12 @@ class ClipCandidateRetriever:
             for name, score in (("objects", object_score), ("metadata", metadata_score), ("ocr", ocr_score), ("asr", asr_score)):
                 if score > 0.0:
                     sources.append(name)
-            enriched.append(
-                RetrievalHit(
-                    video_id=hit.video_id,
-                    frame_id=hit.frame_id,
-                    score=hit.retrieval_score_value,
-                    keyframe_n=hit.keyframe_n,
-                    faiss_id=hit.faiss_id,
-                    sources=tuple(dict.fromkeys(sources)),
-                    object_score=object_score,
-                    metadata_score=metadata_score,
-                    ocr_score=ocr_score,
-                    asr_score=asr_score,
-                    retrieval_score=hit.retrieval_score_value,
-                )
-            )
+            enriched.append(RetrievalHit(video_id=hit.video_id, frame_id=hit.frame_id, score=hit.raw_score,
+                keyframe_n=hit.keyframe_n, faiss_id=hit.faiss_id, sources=tuple(dict.fromkeys(sources)),
+                object_score=object_score, metadata_score=metadata_score, ocr_score=ocr_score,
+                asr_score=asr_score, retrieval_score=hit.raw_score))
         return self._rank_frames(enriched)
 
-    @property
-    def _unused(self):  # pragma: no cover
-        return None
-
-    # Kept as a property so all callers can use one canonical raw retrieval value.
-    # Dataclass fields cannot expose a computed alias without changing serialization.
-    
     @staticmethod
     def _object_score(hit: RetrievalHit, query_tokens: set[str], getter: Any) -> float:
         if getter is None or hit.keyframe_n is None or not query_tokens:
@@ -193,9 +161,9 @@ class ClipCandidateRetriever:
         for hit in hits:
             key = (hit.video_id, hit.frame_id, hit.keyframe_n)
             previous = unique.get(key)
-            if previous is None or hit.retrieval_score_value > previous.retrieval_score_value:
+            if previous is None or hit.raw_score > previous.raw_score:
                 unique[key] = hit
-        return sorted(unique.values(), key=lambda item: (-item.retrieval_score_value, item.video_id, item.frame_id, item.keyframe_n or 0))
+        return sorted(unique.values(), key=lambda item: (-item.raw_score, item.video_id, item.frame_id, item.keyframe_n or 0))
 
     @staticmethod
     def _normalize_hit(item: dict[str, Any]) -> RetrievalHit:
@@ -207,14 +175,9 @@ class ClipCandidateRetriever:
             raise ValueError(f"Invalid retrieval hit: {item!r}") from exc
         keyframe_n = item.get("keyframe_n")
         faiss_id = item.get("faiss_id")
-        return RetrievalHit(
-            video_id=video_id,
-            frame_id=frame_id,
-            score=score,
+        return RetrievalHit(video_id=video_id, frame_id=frame_id, score=score,
             keyframe_n=int(keyframe_n) if keyframe_n is not None else None,
-            faiss_id=int(faiss_id) if faiss_id is not None else None,
-            retrieval_score=score,
-        )
+            faiss_id=int(faiss_id) if faiss_id is not None else None, retrieval_score=score)
 
 
 def _tokens(text: str) -> set[str]:
