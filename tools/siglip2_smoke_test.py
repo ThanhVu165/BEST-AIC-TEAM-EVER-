@@ -32,13 +32,12 @@ def main() -> int:
         torch.cuda.reset_peak_memory_stats(device)
 
     start = time.perf_counter()
-    scores = scorer.score_images([image] * len(texts), "")
-    # score_images accepts one text for a batch of images. For the semantic
-    # smoke test we therefore score each phrase independently while reusing
-    # the lazily loaded model.
-    scores = np.asarray([
-        scorer.score_images([image], text)[0] for text in texts
-    ], dtype=np.float32)
+    # score_images accepts one text for a batch of images. We score each
+    # phrase independently while reusing the lazily loaded model.
+    scores = np.asarray(
+        [scorer.score_images([image], text)[0] for text in texts],
+        dtype=np.float32,
+    )
     if device.type == "cuda":
         torch.cuda.synchronize(device)
     elapsed = time.perf_counter() - start
