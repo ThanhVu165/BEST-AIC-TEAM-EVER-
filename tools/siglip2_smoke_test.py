@@ -19,7 +19,7 @@ DEFAULT_TEXTS = (
 )
 
 
-def _resolve_images(patterns: list[str]) -> list[Path]:
+def _resolve_images(patterns: list[str], limit: int | None = None) -> list[Path]:
     paths: list[Path] = []
     for pattern in patterns:
         matches = [Path(p) for p in glob.glob(pattern, recursive=True)]
@@ -36,7 +36,17 @@ def _resolve_images(patterns: list[str]) -> list[Path]:
         if path not in seen:
             seen.add(path)
             unique.append(path)
-    return unique
+
+    unique.sort(key=lambda path: str(path).lower())
+    if limit is None or len(unique) <= limit:
+        return unique
+    if limit <= 0:
+        raise ValueError("limit must be > 0")
+
+    # Deterministically sample across the whole keyframe set instead of taking
+    # the first N frames, which would usually over-represent one video.
+    indices = np.linspace(0, len(unique) - 1, num=limit, dtype=int)
+    return [unique[int(index)] for index in indices]
 
 
 def main() -> int:
@@ -49,6 +59,7 @@ def main() -> int:
         default=[],
         help="Image paths or glob patterns. If omitted, use one synthetic image.",
     )
+    parser.add_argument("--limit", type=int, default=12, help="Maximum number of resolved images; sample evenly when exceeded")
     parser.add_argument("--text", action="append", dest="texts", help="Text query; repeat for multiple queries")
     parser.add_argument("--warmup", type=int, default=1)
     parser.add_argument("--repeat", type=int, default=3)
@@ -58,9 +69,11 @@ def main() -> int:
         raise SystemExit("CUDA is unavailable. Run this test on a CUDA-enabled PyTorch environment.")
     if args.warmup < 0 or args.repeat <= 0:
         raise SystemExit("--warmup must be >= 0 and --repeat must be > 0")
+    if args.limit <= 0:
+        raise SystemExit("--limit must be > 0")
 
     device = torch.device(args.device)
-    image_paths = _resolve_images(args.images)
+    image_paths = _resolve_images(args.images, args.limit)
     if image_paths:
         images = [Image.open(path).convert("RGB") for path in image_paths]
         image_labels = [str(path) for path in image_paths]
