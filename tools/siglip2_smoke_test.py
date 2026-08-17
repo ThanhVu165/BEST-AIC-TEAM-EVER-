@@ -49,6 +49,15 @@ def _resolve_images(patterns: list[str], limit: int | None = None) -> list[Path]
     return [unique[int(index)] for index in indices]
 
 
+def _print_ranked(text: str, labels: list[str], scores: np.ndarray) -> None:
+    order = np.argsort(-scores)
+    print(f"text={text}")
+    for rank, index in enumerate(order, start=1):
+        print(f"  rank={rank:02d} score={float(scores[index]):.10e}\t{labels[index]}")
+    if not np.isfinite(scores).all():
+        raise SystemExit("SigLIP2 returned invalid scores")
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="SigLIP2 GPU smoke/real-keyframe benchmark")
     parser.add_argument("--model", default="google/siglip2-base-patch16-256")
@@ -133,12 +142,7 @@ def main() -> int:
     print(f"latency_p95_sec={p95:.3f}")
 
     for text in texts:
-        scores = scores_by_text[text]
-        print(f"text={text}")
-        for label, score in zip(image_labels, scores):
-            print(f"  score={float(score):.6f}\t{label}")
-        if not np.isfinite(scores).all():
-            raise SystemExit("SigLIP2 returned invalid scores")
+        _print_ranked(text, image_labels, scores_by_text[text])
 
     for image in images:
         image.close()
