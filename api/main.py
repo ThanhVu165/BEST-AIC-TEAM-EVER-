@@ -46,6 +46,8 @@ def _build_engine() -> BaselineQueryEngine | MockQueryEngine:
         device=os.getenv("AIC_DEVICE", "auto"),
         vlm_model_name=os.getenv("AIC_VLM_MODEL") or None,
         vlm_device=os.getenv("AIC_VLM_DEVICE") or None,
+        fine_temporal_anchors=int(os.getenv("AIC_FINE_TEMPORAL_ANCHORS", "20")),
+        fine_temporal_radius=int(os.getenv("AIC_FINE_TEMPORAL_RADIUS", "16")),
     )
 
 
@@ -88,20 +90,24 @@ def get_video(video_id: str) -> dict[str, object]:
 def get_frame(video_id: str, frame_id: int) -> dict[str, object]:
     datastore = getattr(getattr(engine, "retriever", None), "datastore", None)
     if datastore is None:
-        return {
-            "video_id": video_id,
-            "frame_id": frame_id,
-            "status": "not_connected",
-        }
+        return {"video_id": video_id, "frame_id": frame_id, "status": "not_connected"}
 
     getter = getattr(datastore, "get_frame_by_id", None)
     record = getter(video_id, frame_id) if getter is not None else None
-    if record is None:
-        raise HTTPException(
-            status_code=404,
-            detail=f"Source frame not found: {video_id}/{frame_id}",
-        )
-    return record.model_dump()
+    if record is not None:
+        return record.model_dump()
+
+    # Source-frame IDs are not necessarily keyframes. Report source availability
+    # without forcing the API to serialize binary image data.
+    reader = getattr(datastore, "read_source_frame", None)
+    if reader is not None and reader(video_id, frame_id) is not None:
+        return {
+            "video_id": video_id,
+            "frame_id": frame_id,
+            "is_keyframe": False,
+            "status": "source_frame_available",
+        }
+    raise HTTPException(status_code=404, detail=f"Source frame not found: {video_id}/{frame_id}")
 
 
 @app.post("/api/v1/submission", response_model=SubmissionResponse)
@@ -112,7 +118,4 @@ def create_submission(request: SubmissionRequest) -> SubmissionResponse:
             status_code=404,
             detail=f"No result stored for query_ids: {missing}",
         )
-    return SubmissionResponse(
-        status="completed",
-        file_name="submission_mock.json",
-    )
+    return SubmissionResponse(status="completed", file_name="submission_mock.json")
