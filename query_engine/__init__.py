@@ -5,6 +5,7 @@ from .clip_encoder import CLIPTextEncoder
 from .engine import BaselineQueryEngine
 from .late_verification import LateVerificationConfig, verify_candidate_windows
 from .mock_engine import MockQueryEngine
+from .model_selection import ModelBenchmarkResult, ModelSelectionPolicy
 from .query_understanding import QueryEventSpec, QuerySpec, understand_query
 from .semantic import SemanticQuery, decompose_query, semantic_score
 from .semantic_reranker import (
@@ -26,6 +27,8 @@ __all__ = [
     "InternVideo3Verifier",
     "LateVerificationConfig",
     "MockQueryEngine",
+    "ModelBenchmarkResult",
+    "ModelSelectionPolicy",
     "Qwen3VLVerifier",
     "QueryEventSpec",
     "QuerySpec",
