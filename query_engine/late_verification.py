@@ -37,6 +37,13 @@ class LateVerificationConfig:
             raise ValueError("fps must be > 0")
 
 
+def _candidate_field(candidate: Any, name: str) -> Any:
+    """Read candidate fields from either dict outputs or typed objects."""
+    if isinstance(candidate, dict):
+        return candidate.get(name)
+    return getattr(candidate, name, None)
+
+
 def verify_candidate_windows(
     candidates: list[Any],
     *,
@@ -47,9 +54,9 @@ def verify_candidate_windows(
 ) -> dict[tuple[str, int], float]:
     """Run an expensive verifier only on the highest-ranked temporal anchors.
 
-    Candidates are expected to expose ``video_id`` and ``frame_id``. The
-    datastore must expose ``get_video`` returning a record with ``path`` and
-    optionally ``fps``. Missing source videos simply receive no verification
+    Candidates may be dictionaries (the public engine output) or typed objects.
+    The datastore must expose ``get_video`` returning a record with ``path``
+    and optionally ``fps``. Missing source videos simply receive no verification
     score rather than causing the whole retrieval request to fail.
     """
     if verifier is None or not config.enabled or not candidates or not query.strip():
@@ -58,7 +65,11 @@ def verify_candidate_windows(
     scores: dict[tuple[str, int], float] = {}
     seen: set[tuple[str, int]] = set()
     for candidate in candidates:
-        key = (str(candidate.video_id), int(candidate.frame_id))
+        video_id = _candidate_field(candidate, "video_id")
+        frame_id = _candidate_field(candidate, "frame_id")
+        if video_id is None or frame_id is None:
+            continue
+        key = (str(video_id), int(frame_id))
         if key in seen:
             continue
         seen.add(key)
@@ -96,9 +107,6 @@ def _verify_window(
     materialize: bool,
 ) -> float:
     if not materialize:
-        # A verifier may support direct source paths while using the window
-        # boundaries through its own configuration. The default InternVideo3
-        # adapter requires a bounded clip, so materialization is recommended.
         return float(verifier.verify(window.video_path, query, fps=fps))
 
     path = materialize_window(window)
