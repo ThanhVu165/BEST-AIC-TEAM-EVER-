@@ -33,7 +33,7 @@ Do not hard-code a single model as the solution. Each expensive model must be ev
 | Candidate generation | BTC CLIP ViT-B/32 + FAISS | SigLIP2 / other dense encoders / multi-index union |
 | Semantic reranking | inspectable evidence baseline | **SigLIP2**, larger SigLIP2 variants |
 | Action/relation verification | object evidence | **Qwen3-VL-8B-Instruct**, other VLM/action models |
-| Video-text reranking | frame-level scoring | **InternVideo2** retrieval models / **InternVideo3** video reasoning |
+| Video-window verification | frame-level scoring | **InternVideo3-8B-Instruct**, InternVideo2 retrieval models |
 | Temporal localization | CLIP source-frame refinement | temporal grounding / moment retrieval models |
 | TRAKE alignment | constrained DP | stronger sequence scoring / beam/Viterbi variants |
 | Q&A | answer extractor interface | Qwen3-VL / InternVideo3 / other VLMs with frame/window evidence |
@@ -67,7 +67,7 @@ all indexed keyframes
 
 The exact candidate counts and weights must be benchmarked on the official/local dataset before being frozen.
 
-## VLM action/relation verification
+## Qwen3-VL action/relation verification
 
 `query_engine/vlm_verifier.py` provides a lazy `Qwen3VLVerifier` backend using:
 
@@ -75,9 +75,9 @@ The exact candidate counts and weights must be benchmarked on the official/local
 Qwen/Qwen3-VL-8B-Instruct
 ```
 
-Qwen3-VL is currently the preferred VLM candidate for the verifier layer because its model card explicitly targets stronger spatial and video understanding, long-context video reasoning, and text-timestamp alignment. It remains an **optional late verifier**, not a corpus-wide retriever.
+Qwen3-VL is an optional late verifier. Its model card documents stronger spatial perception, video-dynamics comprehension, long-context video understanding, and text-timestamp alignment. It is therefore a strong candidate for action/relation verification and later temporal/Q&A stages, but it must not be used as a corpus-wide retriever. citehttps://huggingface.co/Qwen/Qwen3-VL-8B-Instruct
 
-The verifier prompt explicitly asks the model to focus on actions and relations rather than object presence. This is designed for hard negatives such as:
+The verifier prompt explicitly asks the model to focus on actions and relations rather than object presence. This targets hard negatives such as:
 
 ```text
 person riding motorcycle
@@ -91,21 +91,17 @@ person riding bicycle
 
 The verifier must only be applied to a small candidate set because an 8B VLM is materially more expensive than a dense encoder. Its output is normalized to `[0, 1]` and can be introduced into final fusion after benchmark validation.
 
-## Video-level model research
+## InternVideo3 video-window verification
 
-Two distinct model families are tracked:
+`query_engine/video_verifier.py` provides a lazy `InternVideo3Verifier` backend using:
 
-### InternVideo2
+```text
+yanziang/InternVideo3-8B-Instruct
+```
 
-InternVideo2 provides explicit video-text retrieval models, including 1B-class checkpoints. It is a candidate for **video/window reranking**, not a replacement for the BTC FAISS index. The official implementation supports retrieval modes, so it is a technically credible second-stage video retriever.
+The official InternVideo3 implementation provides a Transformers inference path with native video inputs. The project describes InternVideo3 as a long-horizon multimodal model with temporal grounding, video understanding, spatial-temporal reasoning, and evidence-gathering capabilities. This makes it a strong candidate for **video/window verification**, TRAKE temporal reasoning, and Q&A after retrieval. citehttps://github.com/OpenGVLab/InternVideo/blob/main/InternVideo3/README.md
 
-### InternVideo3
-
-InternVideo3-8B-Instruct is the newer video-understanding candidate. Its 2026 release targets long-horizon multimodal reasoning, temporal grounding, video QA, and evidence-grounded video agents. The model supports video input through Transformers and has explicit temporal reasoning capabilities.
-
-Because InternVideo3 is roughly 9B parameters and requires custom model code, it should be treated as a **late-stage verifier/reasoner** rather than a first-pass retriever. It is particularly interesting for TRAKE, temporal verification, and Q&A.
-
-The project does not vendor either external codebase. Keep these models behind adapters and only make them runtime dependencies when experiments demonstrate a measurable gain.
+It is deliberately a late-stage backend rather than a replacement for the BTC FAISS index. The adapter uses lazy loading and remains disabled by default until benchmark results justify its inference cost.
 
 ## Hard-negative evaluation
 
@@ -122,7 +118,7 @@ Primary metrics:
 - pairwise accuracy
 - mean positive-minus-negative score margin
 
-Example hard negatives should specifically target action/relation confusion, not only object mismatch. The benchmark is intended to compare CLIP, SigLIP2 variants, and future semantic backends before changing production weights.
+Example hard negatives should specifically target action/relation confusion, not only object mismatch. The benchmark is intended to compare CLIP, SigLIP2 variants, VLM verifiers, and future semantic backends before changing production weights.
 
 ## Model governance
 
