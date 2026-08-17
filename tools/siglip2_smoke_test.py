@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import time
 
+import numpy as np
 import torch
 from PIL import Image
 
@@ -11,7 +12,7 @@ from query_engine.semantic_reranker import SigLIP2ImageTextScorer
 
 def main() -> int:
     parser = argparse.ArgumentParser(description="Minimal SigLIP2 GPU smoke test")
-    parser.add_argument("--model", default="google/siglip2-base-patch16-224")
+    parser.add_argument("--model", default="google/siglip2-base-patch16-256")
     parser.add_argument("--device", default="cuda")
     args = parser.parse_args()
 
@@ -19,20 +20,27 @@ def main() -> int:
         raise SystemExit("CUDA is unavailable. Run this test on a CUDA-enabled PyTorch environment.")
 
     device = torch.device(args.device)
-    image = Image.new("RGB", (224, 224), (128, 128, 128))
+    image = Image.new("RGB", (256, 256), (128, 128, 128))
     texts = [
         "person riding a motorcycle",
         "person standing still",
         "a parked motorcycle",
     ]
 
-    scorer = SigLIP2ImageTextScorer(model_name=args.model, device=str(device))
-    scorer._ensure_loaded()
-    torch.cuda.synchronize(device) if device.type == "cuda" else None
+    scorer = SigLIP2ImageTextScorer(model_id=args.model, device=str(device))
+    if device.type == "cuda":
+        torch.cuda.reset_peak_memory_stats(device)
 
     start = time.perf_counter()
-    scores = scorer.score_image_text(image, texts)
-    torch.cuda.synchronize(device) if device.type == "cuda" else None
+    scores = scorer.score_images([image] * len(texts), "")
+    # score_images accepts one text for a batch of images. For the semantic
+    # smoke test we therefore score each phrase independently while reusing
+    # the lazily loaded model.
+    scores = np.asarray([
+        scorer.score_images([image], text)[0] for text in texts
+    ], dtype=np.float32)
+    if device.type == "cuda":
+        torch.cuda.synchronize(device)
     elapsed = time.perf_counter() - start
 
     print(f"model={args.model}")
@@ -51,7 +59,7 @@ def main() -> int:
     for text, score in zip(texts, scores):
         print(f"score={float(score):.6f}\t{text}")
 
-    if len(scores) != len(texts) or not all(torch.isfinite(torch.tensor(float(s))) for s in scores):
+    if len(scores) != len(texts) or not np.isfinite(scores).all():
         raise SystemExit("SigLIP2 returned invalid scores")
     return 0
 
