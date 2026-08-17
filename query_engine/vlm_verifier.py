@@ -1,6 +1,6 @@
 """Optional VLM verification for difficult action/relation candidates.
 
-This is deliberately a second-stage verifier, not a corpus-wide retriever.  A
+This is deliberately a second-stage verifier, not a corpus-wide retriever. A
 strong VLM is useful for distinctions such as ``riding`` vs ``standing next
 to`` or ``repairing`` vs ``using`` that object presence cannot resolve.
 """
@@ -21,7 +21,7 @@ class VisualVerifier(Protocol):
 @dataclass(frozen=True)
 class VLMVerifierConfig:
     enabled: bool = False
-    model_id: str = "Qwen/Qwen2.5-VL-7B-Instruct"
+    model_id: str = "Qwen/Qwen3-VL-8B-Instruct"
     candidate_limit: int = 5
     weight: float = 0.10
 
@@ -32,15 +32,15 @@ class VLMVerifierConfig:
             raise ValueError("weight must be in [0, 1]")
 
 
-class Qwen25VLVerifier:
-    """Lazy Transformers adapter around Qwen2.5-VL-Instruct.
+class Qwen3VLVerifier:
+    """Lazy Transformers adapter around Qwen3-VL-Instruct.
 
-    The model is only loaded when ``verify`` is first called.  The prompt asks
+    The model is only loaded when ``verify`` is first called. The prompt asks
     for a JSON probability and a short rationale, but only the probability is
     consumed by the ranking pipeline.
     """
 
-    def __init__(self, model_id: str = "Qwen/Qwen2.5-VL-7B-Instruct", *, device: str | None = None) -> None:
+    def __init__(self, model_id: str = "Qwen/Qwen3-VL-8B-Instruct", *, device: str | None = None) -> None:
         self.model_id = model_id
         self.device = device
         self._processor = None
@@ -51,16 +51,16 @@ class Qwen25VLVerifier:
             return
         try:
             import torch
-            from transformers import AutoProcessor, Qwen2_5_VLForConditionalGeneration
+            from transformers import AutoProcessor, Qwen3VLForConditionalGeneration
         except ImportError as exc:  # pragma: no cover - optional ML dependency
             raise RuntimeError(
-                "Qwen2.5-VL requires the optional ML dependencies. Install the 'ml' extra."
+                "Qwen3-VL requires the optional ML dependencies. Install the 'ml' extra."
             ) from exc
 
         self._processor = AutoProcessor.from_pretrained(self.model_id)
-        self._model = Qwen2_5_VLForConditionalGeneration.from_pretrained(
+        self._model = Qwen3VLForConditionalGeneration.from_pretrained(
             self.model_id,
-            torch_dtype="auto",
+            dtype="auto",
             device_map="auto",
         )
         self._model.eval()
@@ -68,7 +68,6 @@ class Qwen25VLVerifier:
 
     @staticmethod
     def _parse_score(text: str) -> float:
-        # Prefer a JSON object, then fall back to a bounded decimal.
         try:
             match = re.search(r"\{.*?\}", text, flags=re.DOTALL)
             if match:
@@ -88,7 +87,7 @@ class Qwen25VLVerifier:
         self._load()
         import torch
 
-        conversation = [
+        messages = [
             {
                 "role": "user",
                 "content": [
@@ -105,13 +104,14 @@ class Qwen25VLVerifier:
                 ],
             }
         ]
-        text = self._processor.apply_chat_template(
-            conversation, tokenize=False, add_generation_prompt=True
+        inputs = self._processor.apply_chat_template(
+            messages,
+            add_generation_prompt=True,
+            tokenize=True,
+            return_dict=True,
+            return_tensors="pt",
         )
-        inputs = self._processor(
-            text=[text], images=[image], padding=True, return_tensors="pt"
-        )
-        inputs = {k: v.to(self.device) for k, v in inputs.items() if hasattr(v, "to")}
+        inputs = inputs.to(self.device)
         with torch.inference_mode():
             generated = self._model.generate(**inputs, max_new_tokens=96)
         prompt_len = inputs["input_ids"].shape[1]
@@ -124,4 +124,4 @@ class Qwen25VLVerifier:
 def build_vlm_verifier(config: VLMVerifierConfig) -> VisualVerifier | None:
     if not config.enabled:
         return None
-    return Qwen25VLVerifier(model_id=config.model_id)
+    return Qwen3VLVerifier(model_id=config.model_id)
