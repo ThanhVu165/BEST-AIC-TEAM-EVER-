@@ -27,11 +27,14 @@ def build_clip_baseline_engine(
     asr_weight: float = 0.02,
     vlm_model_name: str | None = None,
     vlm_device: str | None = None,
+    fine_temporal_anchors: int = 20,
+    fine_temporal_radius: int = 16,
 ) -> BaselineQueryEngine:
     """Construct the current canonical baseline runtime.
 
     BTC CLIP remains the primary retrieval signal. Auxiliary weights are kept
-    explicit so they can be ablated and benchmarked independently.
+    explicit so they can be ablated and benchmarked independently. The same
+    CLIP instance is reused for source-frame temporal refinement.
     """
     clip_store = FAISSFrameStore(index_path=index_path, mapping_path=mapping_path)
     clip_store.load()
@@ -53,4 +56,10 @@ def build_clip_baseline_engine(
             vlm_model_name,
             device=vlm_device or device,
         )
-    return BaselineQueryEngine(retriever, answer_extractor=answer_extractor)
+    return BaselineQueryEngine(
+        retriever,
+        answer_extractor=answer_extractor,
+        image_encoder=embedder,
+        fine_temporal_anchors=fine_temporal_anchors,
+        fine_temporal_radius=fine_temporal_radius,
+    )
