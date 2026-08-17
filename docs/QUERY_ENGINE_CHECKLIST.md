@@ -1,24 +1,67 @@
 # Query Engine completion checklist
 
-## Implemented on `feature/query-engine`
+## Canonical pipeline status
 
-- [x] CLIP text embedding adapter
+### Stage A — Query understanding
+- [x] Normalize `QueryRequest` into a stable `QuerySpec`
+- [x] Explicit KIS / QA / TRAKE task handling
+- [x] Preserve ordered TRAKE event descriptions
+- [ ] Learned/LLM semantic decomposition into entity/action/relation/attribute slots
+
+### Stage B — Candidate generation
+- [x] BTC CLIP ViT-B/32 text encoder adapter
 - [x] FAISS frame retrieval contract
-- [x] expanded frame candidate pool (default 5000)
-- [x] deterministic frame/video candidate ranking
-- [x] optional object evidence fusion
-- [x] optional OCR/ASR/metadata data-access adapters
-- [x] KIS candidate generation
-- [x] TRAKE common-video candidate generation
-- [x] deterministic semantic-keyframe proxy
-- [x] TRAKE score reflects aligned event predictions
-- [x] QA evidence boundary and no-fabrication fallback
-- [x] Recall@1/5/20/50/100 evaluator for supplied reference ground truth
-- [x] manual retrieval review report
-- [x] API source-frame lookup uses original `frame_id`
-- [x] CI for main-targeted PRs
+- [x] Expanded frame candidate pool (default 5000)
+- [x] Preserve frame alternatives before video aggregation
+- [x] Collect optional object/metadata/OCR/ASR evidence
+- [ ] Independent multimodal retrieval channels with measured ablations
 
-## Verified locally by the team
+### Stage C — Video-level ranking
+- [x] Aggregate frame evidence into video hypotheses
+- [x] Preserve multiple candidate videos
+- [ ] Calibrated video-level reranker trained/validated on internal annotations
+
+### Stage D — Temporal localization
+- [x] Deterministic source-frame temporal candidate handling
+- [x] Ordered TRAKE dynamic-programming alignment
+- [x] Temporal window grouping utilities
+- [ ] Coarse temporal search on original videos
+- [ ] Fine frame-level localization on original videos
+- [ ] Sub-10-frame event localization benchmark
+
+### Stage E — Semantic keyframe alignment
+- [x] Explicit proxy selector
+- [x] Source-frame ID preservation
+- [ ] Event-aware semantic keyframe scoring beyond CLIP similarity
+- [ ] Original-video frame refinement
+
+### Stage F — Multimodal reranking
+- [x] Central inspectable score fusion
+- [x] Object / metadata / OCR / ASR evidence fields
+- [x] Deterministic deduplication
+- [x] Candidate diversification utility
+- [ ] Action-aware semantic verification
+- [ ] Relation/compositional verification
+- [ ] Learned/cross-modal reranker benchmark
+
+### Stage G — Task solvers
+- [x] KIS candidate generation
+- [ ] KIS fine temporal localization
+- [x] QA evidence boundary
+- [ ] Production QA answer model
+- [ ] Answer normalization / semantic equivalence benchmark
+- [x] TRAKE common-video candidate generation
+- [x] TRAKE ordered alignment
+- [ ] TRAKE fine-grained event localization
+- [ ] TRAKE sequence-level learned scoring
+
+### Stage H — Final ranking / submission
+- [x] Top-100 output boundary
+- [x] Competition-style Final Score utility for supplied reference annotations
+- [x] Candidate diversification utility
+- [ ] Official submission adapter once BTC schema is fixed
+
+## Data/runtime validation
 
 - [x] SQLite contains `videos`, `frames`, `objects`, `metadata`, `ocr`, `asr_segments`
 - [x] 873 videos
@@ -28,29 +71,12 @@
 - [x] FAISS dimension is 512
 - [x] FAISS metric is inner product
 - [x] first 1000 vector norms are approximately 1
-- [x] all 177,321 mapping rows resolve to the matching SQLite frame identity
+- [x] all 177,321 mapping rows resolve to matching SQLite frame identity
 
-## Cannot be measured officially yet
+## Evaluation policy
 
-- [ ] official preliminary-round query file (not supplied by BTC at the time of development)
-- [ ] official ground-truth query annotations (not supplied by BTC at the time of development)
-- [ ] official Final Score before submission to BTC
+Official BTC evaluation must not be inferred from local `ground_truth.json` unless BTC explicitly authorizes it as evaluation ground truth. Internal manual/reference annotations are engineering-only.
 
-## Manual validation workflow
+The required competition-oriented metrics remain:
 
-1. Build/validate the local data package.
-2. Run `scripts/manual_review.py` on a query.
-3. Inspect the generated HTML report and verify video/frame relevance manually.
-4. Record a small internal annotation set for representative KIS, QA and TRAKE queries.
-5. Compare retrieval changes on the same internal set before accepting a ranking change.
-
-The manual set is an internal engineering benchmark. It must never be represented as official AIC 2026 ground truth.
-
-## Research/model work still required
-
-- [ ] coarse-to-fine temporal localization on original video frames
-- [ ] semantic keyframe selection beyond the CLIP-score proxy
-- [ ] production VLM answer extractor and answer normalization
-- [ ] stronger multimodal reranker using auxiliary evidence
-- [ ] TRAKE sequence optimization with fine-grained event localization
-- [ ] official submission-format adapter once BTC's exact submission interface is fixed
+`R@1`, `R@5`, `R@20`, `R@50`, `R@100`, `Final Score`.
