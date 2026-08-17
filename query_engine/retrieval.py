@@ -1,13 +1,14 @@
-"""Candidate retrieval and auxiliary evidence reranking."""
+"""Candidate retrieval and multimodal auxiliary-evidence collection."""
 from __future__ import annotations
 
-import re
 from dataclasses import dataclass
 from typing import Any, Protocol
 
 import numpy as np
 
 from data_layer.datastore import DataStore
+
+from .query_understanding import QuerySpec
 
 
 class QueryEmbedder(Protocol):
@@ -26,15 +27,18 @@ class RetrievalHit:
     faiss_id: int | None = None
     sources: tuple[str, ...] = ("clip",)
     object_score: float = 0.0
+    metadata_score: float = 0.0
+    ocr_score: float = 0.0
+    asr_score: float = 0.0
     retrieval_score: float | None = None
 
 
 class ClipCandidateRetriever:
-    """Retrieve frame hypotheses and optionally fuse auxiliary object evidence.
+    """Retrieve frame hypotheses from BTC CLIP and collect auxiliary evidence.
 
-    The frame pool is intentionally larger than the final submission cutoff.
-    Video-level aggregation is performed only after frame retrieval so that
-    alternative frames remain available to KIS and temporal stages.
+    The retriever deliberately keeps frame alternatives intact. Video-level
+    aggregation happens only in `retrieve_videos`, allowing later temporal and
+    reranking stages to inspect multiple hypotheses.
     """
 
     def __init__(
@@ -58,8 +62,9 @@ class ClipCandidateRetriever:
         self.video_top_k = video_top_k
         self.object_weight = object_weight
 
-    def retrieve(self, query_text: str) -> list[RetrievalHit]:
+    def retrieve(self, query: QuerySpec | str) -> list[RetrievalHit]:
         """Return ranked frame hypotheses without collapsing video alternatives."""
+        query_text = query.text if isinstance(query, QuerySpec) else query
         text = query_text.strip()
         if not text:
             raise ValueError("query_text must not be empty")
@@ -69,35 +74,23 @@ class ClipCandidateRetriever:
             raise ValueError("embedder must return a non-empty 1D vector")
         raw_hits = self.datastore.search_clip(vector, self.frame_top_k)
         frame_hits = [self._normalize_hit(item) for item in raw_hits]
-        return self._rerank_with_objects(frame_hits, text)
+        return self._collect_auxiliary_evidence(frame_hits, text)
 
-    def retrieve_videos(self, query_text: str) -> list[RetrievalHit]:
-        """Aggregate frame evidence into one strongest hypothesis per video.
-
-        The strongest frame remains the representative frame. Additional hits
-        from the same video are used only as a deterministic support signal for
-        ordering, so one video with many near-duplicate frames cannot completely
-        monopolize the candidate pool while genuine alternatives are retained.
-        """
-        frame_hits = self.retrieve(query_text)
+    def retrieve_videos(self, query: QuerySpec | str) -> list[RetrievalHit]:
+        """Aggregate frame evidence into strongest hypotheses per video."""
+        frame_hits = self.retrieve(query)
         grouped: dict[str, list[RetrievalHit]] = {}
         for hit in frame_hits:
             grouped.setdefault(hit.video_id, []).append(hit)
 
         representatives: list[tuple[RetrievalHit, float]] = []
-        for video_id, hits in grouped.items():
+        for hits in grouped.values():
             ordered = sorted(
                 hits,
-                key=lambda item: (
-                    -item.score,
-                    item.frame_id,
-                    item.keyframe_n or 0,
-                ),
+                key=lambda item: (-item.score, item.frame_id, item.keyframe_n or 0),
             )
             best = ordered[0]
             support = float(np.mean([item.score for item in ordered[:3]]))
-            # Support is deliberately small: max-frame relevance remains the
-            # primary signal, while repeated strong evidence breaks close ties.
             video_rank_score = 0.97 * best.score + 0.03 * support
             representatives.append((best, video_rank_score))
 
@@ -111,52 +104,116 @@ class ClipCandidateRetriever:
         )
         return [item[0] for item in representatives[: self.video_top_k]]
 
-    def _rerank_with_objects(
+    def _collect_auxiliary_evidence(
         self,
         hits: list[RetrievalHit],
         query_text: str,
     ) -> list[RetrievalHit]:
+        datastore = self.datastore
         query_tokens = _tokens(query_text)
-        reranked: list[RetrievalHit] = []
-        getter = getattr(self.datastore, "get_objects", None)
-        for hit in hits:
-            object_score = 0.0
-            if getter is not None and hit.keyframe_n is not None:
-                record = getter(hit.video_id, hit.keyframe_n)
-                if record is not None and query_tokens:
-                    for detection in record.objects:
-                        label_tokens = _tokens(detection.label)
-                        if not label_tokens:
-                            continue
-                        # Object detections are entity evidence only. They are
-                        # never allowed to claim that an action occurred.
-                        overlap = len(label_tokens & query_tokens) / len(label_tokens)
-                        if overlap == 1.0:
-                            object_score = max(object_score, float(detection.confidence))
+        get_objects = getattr(datastore, "get_objects", None)
+        get_ocr = getattr(datastore, "get_ocr", None)
+        get_metadata = getattr(datastore, "get_metadata", None)
+        get_asr = getattr(datastore, "get_asr", None)
 
-            retrieval_score = hit.retrieval_score
-            if retrieval_score is None:
-                retrieval_score = hit.score
-            fused = (
-                (1.0 - self.object_weight) * retrieval_score
-                + self.object_weight * object_score
+        enriched: list[RetrievalHit] = []
+        for hit in hits:
+            object_score = self._object_score(hit, query_tokens, get_objects)
+            metadata_score = self._metadata_score(hit, query_tokens, get_metadata)
+            ocr_score = self._ocr_score(hit, query_tokens, get_ocr)
+            asr_score = self._asr_score(hit, query_tokens, get_asr)
+
+            retrieval_score = hit.retrieval_score if hit.retrieval_score is not None else hit.score
+            auxiliary = (
+                self.object_weight * object_score
+                + 0.03 * metadata_score
+                + 0.02 * ocr_score
+                + 0.02 * asr_score
             )
+            fused = (1.0 - self.object_weight) * retrieval_score + auxiliary
             sources = list(hit.sources)
-            if object_score > 0.0:
-                sources.append("objects")
-            reranked.append(
+            for name, score in (
+                ("objects", object_score),
+                ("metadata", metadata_score),
+                ("ocr", ocr_score),
+                ("asr", asr_score),
+            ):
+                if score > 0.0:
+                    sources.append(name)
+
+            enriched.append(
                 RetrievalHit(
                     video_id=hit.video_id,
                     frame_id=hit.frame_id,
                     score=fused,
                     keyframe_n=hit.keyframe_n,
                     faiss_id=hit.faiss_id,
-                    sources=tuple(sources),
+                    sources=tuple(dict.fromkeys(sources)),
                     object_score=object_score,
+                    metadata_score=metadata_score,
+                    ocr_score=ocr_score,
+                    asr_score=asr_score,
                     retrieval_score=retrieval_score,
                 )
             )
-        return self._rank_frames(reranked)
+        return self._rank_frames(enriched)
+
+    @staticmethod
+    def _object_score(hit: RetrievalHit, query_tokens: set[str], getter: Any) -> float:
+        if getter is None or hit.keyframe_n is None or not query_tokens:
+            return 0.0
+        record = getter(hit.video_id, hit.keyframe_n)
+        if record is None:
+            return 0.0
+        best = 0.0
+        for detection in record.objects:
+            labels = _tokens(detection.label)
+            if labels and labels.issubset(query_tokens):
+                best = max(best, float(detection.confidence))
+        return best
+
+    @staticmethod
+    def _metadata_score(hit: RetrievalHit, query_tokens: set[str], getter: Any) -> float:
+        if getter is None or not query_tokens:
+            return 0.0
+        payload = getter(hit.video_id)
+        if not payload:
+            return 0.0
+        text_parts: list[str] = []
+        for key in ("title", "description", "keywords", "author", "channel_id"):
+            value = payload.get(key)
+            if isinstance(value, list):
+                text_parts.extend(str(item) for item in value)
+            elif value is not None:
+                text_parts.append(str(value))
+        available = _tokens(" ".join(text_parts))
+        if not available:
+            return 0.0
+        return len(query_tokens & available) / len(query_tokens)
+
+    @staticmethod
+    def _ocr_score(hit: RetrievalHit, query_tokens: set[str], getter: Any) -> float:
+        if getter is None or not query_tokens or hit.keyframe_n is None:
+            return 0.0
+        records = getter(hit.video_id, hit.keyframe_n)
+        if not records:
+            return 0.0
+        available = _tokens(" ".join(record.text for record in records))
+        if not available:
+            return 0.0
+        return len(query_tokens & available) / len(query_tokens)
+
+    @staticmethod
+    def _asr_score(hit: RetrievalHit, query_tokens: set[str], getter: Any) -> float:
+        if getter is None or not query_tokens:
+            return 0.0
+        records = getter(hit.video_id)
+        if not records:
+            return 0.0
+        available = _tokens(" ".join(record.text for record in records))
+        if not available:
+            return 0.0
+        return len(query_tokens & available) / len(query_tokens)
 
     @staticmethod
     def _rank_frames(hits: list[RetrievalHit]) -> list[RetrievalHit]:
@@ -166,15 +223,9 @@ class ClipCandidateRetriever:
             previous = unique.get(key)
             if previous is None or hit.score > previous.score:
                 unique[key] = hit
-
         return sorted(
             unique.values(),
-            key=lambda item: (
-                -item.score,
-                item.video_id,
-                item.frame_id,
-                item.keyframe_n or 0,
-            ),
+            key=lambda item: (-item.score, item.video_id, item.frame_id, item.keyframe_n or 0),
         )
 
     @staticmethod
@@ -185,7 +236,6 @@ class ClipCandidateRetriever:
             score = float(item["score"])
         except (KeyError, TypeError, ValueError) as exc:
             raise ValueError(f"Invalid retrieval hit: {item!r}") from exc
-
         keyframe_n = item.get("keyframe_n")
         if keyframe_n is not None:
             keyframe_n = int(keyframe_n)
@@ -203,8 +253,6 @@ class ClipCandidateRetriever:
 
 
 def _tokens(text: str) -> set[str]:
-    return {
-        token
-        for token in re.findall(r"[\w-]+", text.casefold())
-        if len(token) > 1
-    }
+    import re
+
+    return {token for token in re.findall(r"[\w-]+", text.casefold()) if len(token) > 1}
