@@ -8,6 +8,7 @@ from .mock_engine import MockQueryEngine
 from .model_selection import ModelBenchmarkResult, ModelSelectionPolicy
 from .query_understanding import QueryEventSpec, QuerySpec, understand_query
 from .semantic import SemanticQuery, decompose_query, semantic_score
+from .semantic_augmented import SemanticAugmentedQueryEngine, build_semantic_augmented_query_engine
 from .semantic_reranker import (
     SemanticRerankConfig,
     SigLIP2ImageTextScorer,
@@ -33,6 +34,7 @@ __all__ = [
     "QueryEventSpec",
     "QuerySpec",
     "SemanticQuery",
+    "SemanticAugmentedQueryEngine",
     "SemanticRerankConfig",
     "SigLIP2ImageTextScorer",
     "TransformersImageAnswerExtractor",
@@ -40,6 +42,7 @@ __all__ = [
     "VerifiedQueryEngine",
     "VLMVerifierConfig",
     "VideoVerifierConfig",
+    "build_semantic_augmented_query_engine",
     "build_semantic_reranker",
     "build_verified_query_engine",
     "build_video_verifier",
