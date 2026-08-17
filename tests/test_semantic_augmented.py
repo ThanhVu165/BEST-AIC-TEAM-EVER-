@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import numpy as np
+import pytest
 
 from query_engine import SemanticAugmentedQueryEngine
 from query_engine.retrieval import ClipCandidateRetriever
@@ -32,5 +33,5 @@ def test_semantic_candidate_score_uses_visual_scorer():
         semantic_scorer=Scorer(),
         semantic_config=SemanticRerankConfig(enabled=True, candidate_limit=10, weight=0.2),
     )
-    assert engine._semantic_candidate_score("V1", 7, "person riding motorcycle") == 1.0
-    assert engine._semantic_candidate_score("V1", 8, "person riding motorcycle") == 0.1
+    assert engine._semantic_candidate_score("V1", 7, "person riding motorcycle") == pytest.approx(1.0)
+    assert engine._semantic_candidate_score("V1", 8, "person riding motorcycle") == pytest.approx(0.1)
