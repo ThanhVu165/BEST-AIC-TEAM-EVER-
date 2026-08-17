@@ -24,6 +24,10 @@ class DataStore(ABC):
         raise NotImplementedError
 
     @abstractmethod
+    def get_frame_by_id(self, video_id: str, frame_id: int) -> FrameRecord | None:
+        raise NotImplementedError
+
+    @abstractmethod
     def get_frames_in_range(
         self, video_id: str, start_frame: int, end_frame: int
     ) -> list[FrameRecord]:
@@ -37,12 +41,31 @@ class DataStore(ABC):
     def search_clip(self, vector: np.ndarray, top_k: int) -> list[dict[str, Any]]:
         raise NotImplementedError
 
+    # Optional multimodal extensions. They intentionally remain concrete so
+    # lightweight test doubles do not need to implement every data channel.
+    def get_ocr(self, video_id: str, keyframe_n: int | None = None) -> list[OCRRecord]:
+        return []
+
+    def get_asr(self, video_id: str) -> list[ASRSegment]:
+        return []
+
+    def get_metadata(self, video_id: str) -> dict[str, Any] | None:
+        return None
+
+    def read_source_frame(self, video_id: str, frame_id: int) -> Any | None:
+        """Return an original-video frame for fine temporal localization.
+
+        Implementations may return a NumPy RGB image or another image object
+        accepted by the configured image encoder. The default is unavailable.
+        """
+        return None
+
 
 class LocalDataStore(DataStore):
     """SQLite + optional FAISS implementation for a single-machine deployment.
 
-    OCR/ASR/metadata accessors are concrete optional extensions rather than
-    abstract methods so existing Query Engine test doubles remain compatible.
+    OCR/ASR/metadata and source-video accessors are local extensions. Query
+    Engine still talks only to this boundary and never opens SQLite directly.
     """
 
     def __init__(self, db_path: str | Path, clip_index: Any | None = None):
@@ -160,6 +183,35 @@ class LocalDataStore(DataStore):
         except json.JSONDecodeError:
             return None
         return payload if isinstance(payload, dict) else None
+
+    def read_source_frame(self, video_id: str, frame_id: int) -> Any | None:
+        if frame_id < 0:
+            raise ValueError("frame_id must be >= 0")
+        video = self.get_video(video_id)
+        if video is None:
+            return None
+        video_path = Path(video.path)
+        if not video_path.is_file() and not video_path.is_absolute():
+            video_path = self.db_path.parent / video_path
+        if not video_path.is_file():
+            return None
+
+        try:
+            import cv2  # type: ignore
+        except ImportError as exc:  # pragma: no cover - optional local runtime
+            raise RuntimeError("OpenCV is required for source-frame temporal localization") from exc
+
+        capture = cv2.VideoCapture(str(video_path))
+        try:
+            if not capture.isOpened():
+                return None
+            capture.set(cv2.CAP_PROP_POS_FRAMES, int(frame_id))
+            ok, frame = capture.read()
+            if not ok or frame is None:
+                return None
+            return cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+        finally:
+            capture.release()
 
     def search_clip(self, vector: np.ndarray, top_k: int) -> list[dict[str, Any]]:
         if self.clip_index is None:
