@@ -47,70 +47,85 @@ class BaselineQueryEngine(QueryEngine):
 
     def _solve_kis(self, spec: QuerySpec) -> list[dict[str, Any]]:
         hits = self.retriever.retrieve(spec)
-        # Keep a deliberately wider sparse pool than the final submission. The
-        # temporal stage is a refinement stage, not a hard recall gate.
         sparse_limit = max(self.final_limit * 5, 100)
-        sparse = select_semantic_keyframes(
-            [self._frame_evidence(hit) for hit in hits],
-            max_candidates=sparse_limit,
-        )
+        sparse = select_semantic_keyframes([self._frame_evidence(hit) for hit in hits], max_candidates=sparse_limit)
         temporal = self._fine_localize(sparse[: self.fine_temporal_anchors], spec.text)
-
-        # Preserve the original high-recall CLIP hypotheses even when temporal
-        # localization succeeds. A localized anchor is evidence for a better
-        # frame, not proof that every other sparse candidate is irrelevant.
-        # This prevents the old `temporal or sparse` behavior from collapsing
-        # hundreds of CLIP hypotheses down to only the temporal subset.
-        selected = self._merge_kis_candidates(
-            temporal,
-            sparse,
-            limit=max(self.final_limit * 2, self.fine_temporal_anchors),
-        )
+        selected = self._merge_kis_candidates(temporal, sparse, limit=max(self.final_limit * 2, self.fine_temporal_anchors))
 
         hit_by_exact_frame = {(hit.video_id, hit.frame_id): hit for hit in hits}
-        best_hit_by_video: dict[str, RetrievalHit] = {}
-        for hit in hits:
-            previous = best_hit_by_video.get(hit.video_id)
-            if previous is None or hit.score > previous.score: best_hit_by_video[hit.video_id] = hit
+        hit_by_anchor = {(hit.video_id, hit.frame_id): hit for hit in hits}
         semantic_scores = self._semantic_scores(selected, semantic_text(spec))
         ranking_inputs: list[RankingEvidence] = []
         for item in selected:
-            hit = hit_by_exact_frame.get((item.video_id, item.frame_id)) or best_hit_by_video.get(item.video_id)
-            if hit is None: continue
-            ranking_inputs.append(RankingEvidence(video_id=item.video_id, frame_id=item.frame_id, retrieval_score=hit.retrieval_score if hit.retrieval_score is not None else hit.score, object_score=hit.object_score, metadata_score=hit.metadata_score, ocr_score=hit.ocr_score, asr_score=hit.asr_score, temporal_score=item.score, semantic_score=semantic_scores.get((item.video_id, item.frame_id), 0.0), semantic_weight=self.semantic_config.weight, sources=hit.sources))
+            exact_hit = hit_by_exact_frame.get((item.video_id, item.frame_id))
+            anchor_frame_id = item.anchor_frame_id if item.anchor_frame_id is not None else item.frame_id
+            anchor_hit = hit_by_anchor.get((item.video_id, anchor_frame_id))
+            hit = exact_hit or anchor_hit
+            if hit is None:
+                continue
+            retrieval_score = hit.retrieval_score if hit.retrieval_score is not None else hit.score
+            ranking_inputs.append(RankingEvidence(
+                video_id=item.video_id,
+                frame_id=item.frame_id,
+                retrieval_score=retrieval_score,
+                object_score=hit.object_score if exact_hit is not None else 0.0,
+                metadata_score=hit.metadata_score if exact_hit is not None else 0.0,
+                ocr_score=hit.ocr_score if exact_hit is not None else 0.0,
+                asr_score=hit.asr_score,
+                temporal_score=item.score,
+                semantic_score=semantic_scores.get((item.video_id, item.frame_id), 0.0),
+                semantic_weight=self.semantic_config.weight,
+                sources=tuple(dict.fromkeys((*hit.sources, "temporal_anchor" if exact_hit is None else "exact_frame"))),
+            ))
+
         ranked = rerank_candidates(ranking_inputs, limit=max(self.final_limit * 5, 100))
         ranked = diversify_candidates(ranked, limit=self.final_limit, max_per_video=self.max_kis_candidates_per_video)
         temporal_lookup = {(item.video_id, item.frame_id): item for item in selected}
         results: list[dict[str, Any]] = []
         for ranking in ranked:
-            hit = hit_by_exact_frame.get((ranking.video_id, ranking.frame_id)) or best_hit_by_video.get(ranking.video_id)
-            if hit is None: continue
             temporal_item = temporal_lookup.get((ranking.video_id, ranking.frame_id))
-            evidence = {"sources": list(hit.sources), "clip_score": hit.retrieval_score, "object_score": hit.object_score, "metadata_score": hit.metadata_score, "ocr_score": hit.ocr_score, "asr_score": hit.asr_score, "temporal_score": temporal_item.score if temporal_item is not None else 0.0, "semantic_score": ranking.semantic_score, "semantic_model": self.semantic_config.model_id if self.semantic_scorer is not None else None, "semantic_weight": ranking.semantic_weight, "rerank_score": ranking.fused_score, "keyframe_n": hit.keyframe_n if temporal_item is None else temporal_item.keyframe_n, "fine_temporal": temporal_item is not None and temporal_item.frame_id != hit.frame_id}
-            results.append(Candidate(rank=len(results) + 1, video_id=ranking.video_id, frame_id=ranking.frame_id, score=ranking.fused_score, retrieval_score=hit.retrieval_score, temporal_score=temporal_item.score if temporal_item is not None else 0.0, rerank_score=ranking.fused_score, evidence=evidence).model_dump())
+            exact_hit = hit_by_exact_frame.get((ranking.video_id, ranking.frame_id))
+            anchor_frame_id = temporal_item.anchor_frame_id if temporal_item and temporal_item.anchor_frame_id is not None else ranking.frame_id
+            anchor_hit = hit_by_anchor.get((ranking.video_id, anchor_frame_id))
+            evidence_hit = exact_hit or anchor_hit
+            if evidence_hit is None:
+                continue
+            localized = temporal_item is not None and temporal_item.frame_id != anchor_frame_id
+            evidence = {
+                "sources": list(ranking.sources),
+                "clip_score": evidence_hit.retrieval_score if exact_hit is not None else None,
+                "retrieval_anchor_score": evidence_hit.retrieval_score if evidence_hit.retrieval_score is not None else evidence_hit.score,
+                "retrieval_anchor_frame_id": anchor_frame_id,
+                "retrieval_score_scope": "exact_frame" if exact_hit is not None else "temporal_anchor",
+                "object_score": evidence_hit.object_score if exact_hit is not None else 0.0,
+                "metadata_score": evidence_hit.metadata_score if exact_hit is not None else 0.0,
+                "ocr_score": evidence_hit.ocr_score if exact_hit is not None else 0.0,
+                "asr_score": evidence_hit.asr_score,
+                "temporal_score": temporal_item.score if temporal_item is not None else 0.0,
+                "semantic_score": ranking.semantic_score,
+                "semantic_model": self.semantic_config.model_id if self.semantic_scorer is not None else None,
+                "semantic_weight": ranking.semantic_weight,
+                "rerank_score": ranking.fused_score,
+                "keyframe_n": evidence_hit.keyframe_n if exact_hit is not None else (temporal_item.keyframe_n if temporal_item is not None else None),
+                "fine_temporal": localized,
+            }
+            results.append(Candidate(rank=len(results) + 1, video_id=ranking.video_id, frame_id=ranking.frame_id, score=ranking.fused_score, retrieval_score=ranking.retrieval_score, temporal_score=temporal_item.score if temporal_item is not None else 0.0, rerank_score=ranking.fused_score, evidence=evidence).model_dump())
         return results
 
     @staticmethod
     def _merge_kis_candidates(temporal: list[Any], sparse: list[Any], *, limit: int) -> list[Any]:
-        """Merge temporal refinements with sparse retrieval without losing recall."""
-        if limit <= 0:
-            return []
+        if limit <= 0: return []
         merged: list[Any] = []
         seen: set[tuple[str, int]] = set()
         for item in temporal:
             key = (item.video_id, item.frame_id)
-            if key in seen:
-                continue
-            seen.add(key)
-            merged.append(item)
+            if key not in seen:
+                seen.add(key); merged.append(item)
         for item in sparse:
             key = (item.video_id, item.frame_id)
-            if key in seen:
-                continue
-            seen.add(key)
-            merged.append(item)
-            if len(merged) >= limit:
-                break
+            if key not in seen:
+                seen.add(key); merged.append(item)
+            if len(merged) >= limit: break
         return merged[:limit]
 
     def _semantic_scores(self, items: list[FrameEvidence], text: str) -> dict[tuple[str, int], float]:
@@ -120,7 +135,6 @@ class BaselineQueryEngine(QueryEngine):
         if reader is None and single_reader is None: return {}
         grouped: dict[str, list[FrameEvidence]] = {}
         for item in items[: self.semantic_config.candidate_limit]: grouped.setdefault(item.video_id, []).append(item)
-
         raw_scores: dict[tuple[str, int], float] = {}
         for video_id, video_items in grouped.items():
             frame_ids = [item.frame_id for item in video_items]
@@ -132,17 +146,12 @@ class BaselineQueryEngine(QueryEngine):
             for item, value in zip(valid_items, values):
                 if not np.isfinite(value): raise ValueError("semantic scorer returned a non-finite score")
                 raw_scores[(item.video_id, item.frame_id)] = float(value)
-
-        if not raw_scores:
-            return {}
+        if not raw_scores: return {}
         if not self.semantic_config.normalize_scores or len(raw_scores) == 1:
             return {key: max(0.0, min(1.0, value)) for key, value in raw_scores.items()}
-
         values = np.asarray(list(raw_scores.values()), dtype=np.float32)
-        low = float(values.min())
-        high = float(values.max())
-        if high <= low:
-            return {key: 0.0 for key in raw_scores}
+        low, high = float(values.min()), float(values.max())
+        if high <= low: return {key: 0.0 for key in raw_scores}
         return {key: float((value - low) / (high - low)) for key, value in raw_scores.items()}
 
     def _solve_qa(self, spec: QuerySpec) -> list[dict[str, Any]]:
