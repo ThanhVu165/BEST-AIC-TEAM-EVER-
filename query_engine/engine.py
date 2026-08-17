@@ -10,35 +10,43 @@ from .interfaces import QueryEngine
 from .query_understanding import QuerySpec, understand_query
 from .ranking import RankingEvidence, diversify_candidates, rerank_candidates
 from .retrieval import ClipCandidateRetriever, RetrievalHit
-from .temporal import FrameEvidence, select_ordered_event_frames, select_semantic_keyframes
+from .temporal import (
+    FrameEvidence,
+    fine_localize_source_frames,
+    select_ordered_event_frames,
+    select_semantic_keyframes,
+)
 
 
 class BaselineQueryEngine(QueryEngine):
-    """Canonical pipeline orchestration with explicit intermediate stages.
-
-    The current implementation is deliberately a strong deterministic baseline:
-    query understanding -> multimodal candidate retrieval -> reranking ->
-    temporal/keyframe selection -> task solver -> final candidate ordering.
-    Learned temporal grounding and learned semantic reranking can replace the
-    corresponding stages without changing the public task contracts.
-    """
+    """Canonical pipeline with retrieval, reranking, temporal and task stages."""
 
     def __init__(
         self,
         retriever: ClipCandidateRetriever,
         answer_extractor: AnswerExtractor | None = None,
         *,
+        image_encoder: Any | None = None,
         final_limit: int = 100,
         max_kis_candidates_per_video: int = 10,
+        fine_temporal_anchors: int = 20,
+        fine_temporal_radius: int = 16,
+        fine_temporal_video_limit: int = 10,
     ) -> None:
         if final_limit <= 0:
             raise ValueError("final_limit must be > 0")
         if max_kis_candidates_per_video <= 0:
             raise ValueError("max_kis_candidates_per_video must be > 0")
+        if fine_temporal_anchors <= 0 or fine_temporal_radius < 0 or fine_temporal_video_limit <= 0:
+            raise ValueError("invalid fine temporal configuration")
         self.retriever = retriever
         self.answer_extractor = answer_extractor or UnavailableAnswerExtractor()
+        self.image_encoder = image_encoder
         self.final_limit = final_limit
         self.max_kis_candidates_per_video = max_kis_candidates_per_video
+        self.fine_temporal_anchors = fine_temporal_anchors
+        self.fine_temporal_radius = fine_temporal_radius
+        self.fine_temporal_video_limit = fine_temporal_video_limit
 
     def search(self, request: QueryRequest) -> SearchResponse:
         spec = understand_query(request)
@@ -67,28 +75,29 @@ class BaselineQueryEngine(QueryEngine):
 
     def _solve_kis(self, spec: QuerySpec) -> list[dict[str, Any]]:
         hits = self.retriever.retrieve(spec)
-        selected = select_semantic_keyframes(
+        sparse = select_semantic_keyframes(
             [self._frame_evidence(hit) for hit in hits],
             max_candidates=max(self.final_limit * 5, 100),
         )
-        by_keyframe = {
-            (hit.video_id, hit.keyframe_n): hit
-            for hit in hits
-            if hit.keyframe_n is not None
-        }
-        by_frame = {(hit.video_id, hit.frame_id): hit for hit in hits}
+        temporal = self._fine_localize(sparse[: self.fine_temporal_anchors], spec.text)
+        selected = temporal or sparse
+
+        hit_by_exact_frame = {(hit.video_id, hit.frame_id): hit for hit in hits}
+        best_hit_by_video: dict[str, RetrievalHit] = {}
+        for hit in hits:
+            previous = best_hit_by_video.get(hit.video_id)
+            if previous is None or hit.score > previous.score:
+                best_hit_by_video[hit.video_id] = hit
 
         ranking_inputs: list[RankingEvidence] = []
         for item in selected:
-            hit = by_keyframe.get((item.video_id, item.keyframe_n)) if item.keyframe_n is not None else None
-            if hit is None:
-                hit = by_frame.get((item.video_id, item.frame_id))
+            hit = hit_by_exact_frame.get((item.video_id, item.frame_id)) or best_hit_by_video.get(item.video_id)
             if hit is None:
                 continue
             ranking_inputs.append(
                 RankingEvidence(
-                    video_id=hit.video_id,
-                    frame_id=hit.frame_id,
+                    video_id=item.video_id,
+                    frame_id=item.frame_id,
                     retrieval_score=hit.retrieval_score if hit.retrieval_score is not None else hit.score,
                     object_score=hit.object_score,
                     metadata_score=hit.metadata_score,
@@ -106,16 +115,14 @@ class BaselineQueryEngine(QueryEngine):
             limit=self.final_limit,
             max_per_video=self.max_kis_candidates_per_video,
         )
-
-        hit_lookup = {(hit.video_id, hit.frame_id): hit for hit in hits}
         temporal_lookup = {(item.video_id, item.frame_id): item for item in selected}
+
         results: list[dict[str, Any]] = []
         for ranking in ranked:
-            hit = hit_lookup.get((ranking.video_id, ranking.frame_id))
-            temporal = temporal_lookup.get((ranking.video_id, ranking.frame_id))
+            hit = hit_by_exact_frame.get((ranking.video_id, ranking.frame_id)) or best_hit_by_video.get(ranking.video_id)
             if hit is None:
                 continue
-            score = ranking.fused_score
+            temporal_item = temporal_lookup.get((ranking.video_id, ranking.frame_id))
             evidence = {
                 "sources": list(hit.sources),
                 "clip_score": hit.retrieval_score,
@@ -123,51 +130,62 @@ class BaselineQueryEngine(QueryEngine):
                 "metadata_score": hit.metadata_score,
                 "ocr_score": hit.ocr_score,
                 "asr_score": hit.asr_score,
-                "temporal_score": temporal.score if temporal is not None else 0.0,
-                "rerank_score": score,
-                "keyframe_n": hit.keyframe_n,
+                "temporal_score": temporal_item.score if temporal_item is not None else 0.0,
+                "rerank_score": ranking.fused_score,
+                "keyframe_n": hit.keyframe_n if temporal_item is None else temporal_item.keyframe_n,
+                "fine_temporal": temporal_item is not None and temporal_item.frame_id != hit.frame_id,
             }
             results.append(
                 Candidate(
                     rank=len(results) + 1,
-                    video_id=hit.video_id,
-                    frame_id=hit.frame_id,
-                    score=score,
+                    video_id=ranking.video_id,
+                    frame_id=ranking.frame_id,
+                    score=ranking.fused_score,
                     retrieval_score=hit.retrieval_score,
-                    temporal_score=temporal.score if temporal is not None else 0.0,
-                    rerank_score=score,
+                    temporal_score=temporal_item.score if temporal_item is not None else 0.0,
+                    rerank_score=ranking.fused_score,
                     evidence=evidence,
                 ).model_dump()
             )
         return results
 
     def _solve_qa(self, spec: QuerySpec) -> list[dict[str, Any]]:
-        # Video aggregation is the coarse candidate-generation stage. The
-        # representative frame is then passed through the same temporal proxy
-        # used by KIS before answer extraction.
         hits = self.retriever.retrieve_videos(spec)
-        frame_candidates = select_semantic_keyframes(
+        sparse = select_semantic_keyframes(
             [self._frame_evidence(hit) for hit in hits],
             max_candidates=min(max(self.final_limit, 20), len(hits)),
         )
-        by_frame = {(hit.video_id, hit.frame_id): hit for hit in hits}
-        candidates: list[dict[str, Any]] = []
+        temporal = self._fine_localize(sparse[: self.fine_temporal_anchors], spec.text)
+        selected = temporal or sparse
+        hit_by_exact_frame = {(hit.video_id, hit.frame_id): hit for hit in hits}
+        best_hit_by_video: dict[str, RetrievalHit] = {}
+        for hit in hits:
+            previous = best_hit_by_video.get(hit.video_id)
+            if previous is None or hit.score > previous.score:
+                best_hit_by_video[hit.video_id] = hit
 
-        for item in frame_candidates:
-            hit = by_frame.get((item.video_id, item.frame_id))
+        candidates: list[dict[str, Any]] = []
+        reader = getattr(self.retriever.datastore, "read_source_frame", None)
+        for item in selected:
+            hit = hit_by_exact_frame.get((item.video_id, item.frame_id)) or best_hit_by_video.get(item.video_id)
             if hit is None:
                 continue
-            frame = self._keyframe_record(hit)
+            frame = self._keyframe_record(hit) if item.frame_id == hit.frame_id else None
+            image = None
+            if frame is None and reader is not None:
+                image = reader(item.video_id, item.frame_id)
+
             answer = ""
             status = "evidence_unavailable"
             confidence = None
-            if frame is not None and spec.question:
+            if spec.question and (frame is not None or image is not None):
                 result = self.answer_extractor.answer(
                     AnswerEvidence(
-                        video_id=hit.video_id,
-                        frame_id=hit.frame_id,
-                        frame_path=frame.path,
+                        video_id=item.video_id,
+                        frame_id=item.frame_id,
+                        frame_path=frame.path if frame is not None else None,
                         question=spec.question,
+                        image=image,
                     )
                 )
                 answer = result.answer
@@ -185,14 +203,15 @@ class BaselineQueryEngine(QueryEngine):
                 "temporal_score": item.score,
                 "answer_status": status,
                 "rerank_score": rerank_score,
+                "fine_temporal": item.frame_id != hit.frame_id,
             }
             if confidence is not None:
                 evidence["answer_confidence"] = confidence
             candidates.append(
                 QACandidate(
                     rank=0,
-                    video_id=hit.video_id,
-                    frame_id=hit.frame_id,
+                    video_id=item.video_id,
+                    frame_id=item.frame_id,
                     score=rerank_score,
                     answer=answer,
                     retrieval_score=hit.retrieval_score,
@@ -210,9 +229,6 @@ class BaselineQueryEngine(QueryEngine):
     @staticmethod
     def _qa_score(hit: RetrievalHit, temporal_score: float, answer_status: str) -> float:
         retrieval = hit.retrieval_score if hit.retrieval_score is not None else hit.score
-        # Retrieval evidence remains dominant. A completed answer gets a small
-        # deterministic bonus; unavailable/empty answers are never fabricated
-        # and receive no bonus.
         answer_bonus = 0.05 if answer_status == "completed" else 0.0
         return 0.82 * retrieval + 0.10 * temporal_score + 0.03 * hit.metadata_score + answer_bonus
 
@@ -245,24 +261,33 @@ class BaselineQueryEngine(QueryEngine):
         scored_videos.sort(key=lambda item: (-item[1], item[0]))
         results: list[dict[str, Any]] = []
         for video_id, _, event_hits in scored_videos[: self.final_limit * 2]:
-            ordered_inputs = [
-                [self._frame_evidence(hit) for hit in event_hits[event.event_id]]
-                for event in spec.events
-            ]
+            ordered_inputs: list[list[FrameEvidence]] = []
+            for event in spec.events:
+                event_evidence = [self._frame_evidence(hit) for hit in event_hits[event.event_id]]
+                if self.image_encoder is not None and len(ordered_inputs) < len(spec.events):
+                    fine = self._fine_localize(event_evidence[: self.fine_temporal_anchors], event.description)
+                    event_evidence = [
+                        FrameEvidence(
+                            video_id=item.video_id,
+                            frame_id=item.frame_id,
+                            keyframe_n=item.keyframe_n,
+                            timestamp=item.timestamp,
+                            retrieval_score=item.score,
+                        )
+                        for item in (fine or select_semantic_keyframes(event_evidence, max_candidates=self.fine_temporal_anchors))
+                    ]
+                ordered_inputs.append(event_evidence)
+
             selected = select_ordered_event_frames(
                 ordered_inputs,
-                max_candidates_per_event=100,
+                max_candidates_per_event=self.fine_temporal_anchors,
                 allow_same_frame=False,
             )
             if len(selected) != len(spec.events):
                 continue
 
             event_predictions = [
-                {
-                    "event_id": event.event_id,
-                    "frame_id": selected[idx].frame_id,
-                    "score": selected[idx].score,
-                }
+                {"event_id": event.event_id, "frame_id": selected[idx].frame_id, "score": selected[idx].score}
                 for idx, event in enumerate(spec.events)
             ]
             aligned_score = sum(item["score"] for item in event_predictions) / len(event_predictions)
@@ -279,6 +304,22 @@ class BaselineQueryEngine(QueryEngine):
         for rank, candidate in enumerate(results[: self.final_limit], start=1):
             candidate["rank"] = rank
         return results[: self.final_limit]
+
+    def _fine_localize(self, anchors: list[Any], query_text: str):
+        if not anchors or self.image_encoder is None:
+            return []
+        reader = getattr(self.retriever.datastore, "read_source_frame", None)
+        batch_reader = getattr(self.retriever.datastore, "read_source_frames", None)
+        if reader is None and batch_reader is None:
+            return []
+        return fine_localize_source_frames(
+            anchors,
+            query_text=query_text,
+            reader=self.retriever.datastore,
+            image_encoder=self.image_encoder,
+            radius=self.fine_temporal_radius,
+            max_candidates=self.fine_temporal_anchors,
+        )
 
     def _keyframe_record(self, hit: RetrievalHit):
         getter = getattr(self.retriever.datastore, "get_frame", None)
