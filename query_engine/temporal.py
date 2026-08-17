@@ -19,7 +19,13 @@ class FrameEvidence:
 
 @dataclass(frozen=True)
 class TemporalCandidate:
-    """Temporally grounded frame hypothesis."""
+    """Temporally grounded frame hypothesis.
+
+    ``anchor_frame_id`` and ``anchor_retrieval_score`` preserve provenance when
+    localization moves an anchor to a different source-video frame. The
+    retrieval score is therefore never silently presented as evidence from the
+    localized frame itself.
+    """
 
     video_id: str
     frame_id: int
@@ -27,6 +33,8 @@ class TemporalCandidate:
     timestamp: float | None
     score: float
     rank: int
+    anchor_frame_id: int | None = None
+    anchor_retrieval_score: float | None = None
 
 
 class SourceFrameReader(Protocol):
@@ -77,6 +85,8 @@ def select_semantic_keyframes(
             timestamp=item.timestamp,
             score=_safe_score(item.retrieval_score),
             rank=rank,
+            anchor_frame_id=item.frame_id,
+            anchor_retrieval_score=item.retrieval_score,
         )
         for rank, item in enumerate(ordered[:max_candidates], start=1)
     ]
@@ -101,9 +111,9 @@ def fine_localize_source_frames(
     is therefore an original-video frame ID, including non-keyframes when the
     source video is available.
 
-    This is still a local CLIP temporal proxy rather than a learned temporal
-    grounding model, but it closes the architectural gap between sparse
-    keyframe retrieval and source-frame output.
+    Retrieval provenance is kept separately from the localized frame so later
+    ranking cannot accidentally combine a frame B with metadata/score belonging
+    to an unrelated frame A.
     """
     if not query_text.strip():
         raise ValueError("query_text must not be empty")
@@ -136,8 +146,6 @@ def fine_localize_source_frames(
             images.append(image)
             valid_ids.append(frame_id)
         if not images:
-            # Source video unavailable: retain the sparse hypothesis rather than
-            # inventing a frame or dropping the candidate entirely.
             fallback = TemporalCandidate(
                 video_id=anchor.video_id,
                 frame_id=anchor.frame_id,
@@ -145,6 +153,8 @@ def fine_localize_source_frames(
                 timestamp=anchor.timestamp,
                 score=anchor.retrieval_score,
                 rank=0,
+                anchor_frame_id=anchor.frame_id,
+                anchor_retrieval_score=anchor.retrieval_score,
             )
             best_by_key[(fallback.video_id, fallback.frame_id)] = fallback
             continue
@@ -161,6 +171,8 @@ def fine_localize_source_frames(
             timestamp=None,
             score=best_score,
             rank=0,
+            anchor_frame_id=anchor.frame_id,
+            anchor_retrieval_score=anchor.retrieval_score,
         )
         key = (candidate.video_id, candidate.frame_id)
         previous = best_by_key.get(key)
@@ -179,6 +191,8 @@ def fine_localize_source_frames(
             timestamp=item.timestamp,
             score=item.score,
             rank=rank,
+            anchor_frame_id=item.anchor_frame_id,
+            anchor_retrieval_score=item.anchor_retrieval_score,
         )
         for rank, item in enumerate(ranked, start=1)
     ]
@@ -190,13 +204,7 @@ def select_ordered_event_frames(
     max_candidates_per_event: int = 100,
     allow_same_frame: bool = False,
 ) -> list[TemporalCandidate]:
-    """Select one frame per event while respecting strict temporal event order.
-
-    Every output frame must already be present in retrieval evidence. A valid
-    path maximizes cumulative retrieval evidence under the event-order
-    constraint. If no valid path exists, an empty result is returned so the
-    caller does not silently emit a semantically invalid alignment.
-    """
+    """Select one frame per event while respecting strict temporal event order."""
     if not events or max_candidates_per_event <= 0:
         return []
 
@@ -225,11 +233,7 @@ def select_ordered_event_frames(
             best_score = float("-inf")
             best_parent: int | None = None
             for previous_idx, previous in enumerate(candidates[event_idx - 1]):
-                valid = (
-                    current.frame_id >= previous.frame_id
-                    if allow_same_frame
-                    else current.frame_id > previous.frame_id
-                )
+                valid = current.frame_id >= previous.frame_id if allow_same_frame else current.frame_id > previous.frame_id
                 if not valid or not isfinite(dp[event_idx - 1][previous_idx]):
                     continue
                 score = dp[event_idx - 1][previous_idx] + _safe_score(current.retrieval_score)
@@ -244,10 +248,7 @@ def select_ordered_event_frames(
         dp.append(current_scores)
         parent.append(current_parent)
 
-    final_idx = max(
-        range(len(candidates[-1])),
-        key=lambda idx: (dp[-1][idx], -candidates[-1][idx].frame_id, -idx),
-    )
+    final_idx = max(range(len(candidates[-1])), key=lambda idx: (dp[-1][idx], -candidates[-1][idx].frame_id, -idx))
     if not isfinite(dp[-1][final_idx]):
         return []
 
@@ -262,16 +263,16 @@ def select_ordered_event_frames(
     selected: list[TemporalCandidate] = []
     for rank, (event, idx) in enumerate(zip(candidates, selected_indices), start=1):
         item = event[idx]
-        selected.append(
-            TemporalCandidate(
-                video_id=item.video_id,
-                frame_id=item.frame_id,
-                keyframe_n=item.keyframe_n,
-                timestamp=item.timestamp,
-                score=_safe_score(item.retrieval_score),
-                rank=rank,
-            )
-        )
+        selected.append(TemporalCandidate(
+            video_id=item.video_id,
+            frame_id=item.frame_id,
+            keyframe_n=item.keyframe_n,
+            timestamp=item.timestamp,
+            score=_safe_score(item.retrieval_score),
+            rank=rank,
+            anchor_frame_id=item.frame_id,
+            anchor_retrieval_score=item.retrieval_score,
+        ))
     return selected
 
 
@@ -290,12 +291,7 @@ def group_into_temporal_windows(
     previous_frame: int | None = None
 
     for item in ordered:
-        contiguous = (
-            bool(current)
-            and item.video_id == previous_video
-            and previous_frame is not None
-            and item.frame_id - previous_frame <= max_gap_frames
-        )
+        contiguous = bool(current) and item.video_id == previous_video and previous_frame is not None and item.frame_id - previous_frame <= max_gap_frames
         if not contiguous:
             if current:
                 windows.append(current)
@@ -316,7 +312,4 @@ def align_event_sequence(
     max_candidates_per_event: int = 100,
 ) -> list[list[TemporalCandidate]]:
     """Retain ranked hypotheses per event without forcing alignment."""
-    return [
-        select_semantic_keyframes(event, max_candidates=max_candidates_per_event)
-        for event in events
-    ]
+    return [select_semantic_keyframes(event, max_candidates=max_candidates_per_event) for event in events]
