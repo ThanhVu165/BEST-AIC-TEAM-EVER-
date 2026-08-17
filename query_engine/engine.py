@@ -11,6 +11,7 @@ from .query_understanding import QuerySpec, understand_query
 from .ranking import RankingEvidence, diversify_candidates, rerank_candidates
 from .retrieval import ClipCandidateRetriever, RetrievalHit
 from .semantic_reranker import ImageTextScorer, SemanticRerankConfig, build_semantic_reranker, semantic_text
+from .semantic_temporal import select_semantic_ordered_event_frames
 from .temporal import FrameEvidence, fine_localize_source_frames, select_ordered_event_frames, select_semantic_keyframes
 
 
@@ -139,13 +140,18 @@ class BaselineQueryEngine(QueryEngine):
         results: list[dict[str, Any]] = []
         for video_id, _, event_hits in scored_videos[: self.final_limit * 2]:
             ordered_inputs: list[list[FrameEvidence]] = []
+            semantic_by_event: list[dict[tuple[str, int], float]] = []
             for event in spec.events:
                 event_evidence = [self._frame_evidence(hit) for hit in event_hits[event.event_id]]
                 if self.image_encoder is not None:
                     fine = self._fine_localize(event_evidence[: self.fine_temporal_anchors], event.description)
                     event_evidence = fine or select_semantic_keyframes(event_evidence, max_candidates=self.fine_temporal_anchors)
-                ordered_inputs.append(event_evidence)
-            selected = select_ordered_event_frames(ordered_inputs, max_candidates_per_event=self.fine_temporal_anchors, allow_same_frame=False)
+                ordered_inputs.append(event_evidence[: self.fine_temporal_anchors])
+                semantic_by_event.append(self._semantic_scores(event_evidence[: self.fine_temporal_anchors], event.description))
+            if self.semantic_scorer is not None:
+                selected = select_semantic_ordered_event_frames(ordered_inputs, semantic_by_event, semantic_weight=self.semantic_config.weight, max_candidates_per_event=self.fine_temporal_anchors, allow_same_frame=False)
+            else:
+                selected = select_ordered_event_frames(ordered_inputs, max_candidates_per_event=self.fine_temporal_anchors, allow_same_frame=False)
             if len(selected) != len(spec.events): continue
             event_predictions = [{"event_id": event.event_id, "frame_id": selected[idx].frame_id, "score": selected[idx].score} for idx, event in enumerate(spec.events)]
             results.append(TRAKECandidate(rank=0, video_id=video_id, events=event_predictions, score=sum(item["score"] for item in event_predictions) / len(event_predictions)).model_dump())
