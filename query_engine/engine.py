@@ -20,7 +20,7 @@ from .temporal import FrameEvidence, fine_localize_source_frames, select_ordered
 class BaselineQueryEngine(QueryEngine):
     """Canonical pipeline with pluggable model-based semantic reranking."""
 
-    def __init__(self, retriever: ClipCandidateRetriever, answer_extractor: AnswerExtractor | None = None, *, image_encoder: Any | None = None, semantic_scorer: ImageTextScorer | None = None, semantic_config: SemanticRerankConfig | None = None, final_limit: int = 100, max_kis_candidates_per_video: int = 10, fine_temporal_anchors: int = 20, fine_temporal_radius: int = 16, fine_temporal_video_limit: int = 10) -> None:
+    def __init__(self, retriever: ClipCandidateRetriever, answer_extractor: AnswerExtractor | None = None, *, image_encoder: Any | None = None, semantic_scorer: ImageTextScorer | None = None, semantic_config: SemanticRerankConfig | None = None, final_limit: int = 100, max_kis_candidates_per_video: int = 10, fine_temporal_anchors: int = 64, fine_temporal_radius: int = 16, fine_temporal_video_limit: int = 10) -> None:
         if final_limit <= 0: raise ValueError("final_limit must be > 0")
         if max_kis_candidates_per_video <= 0: raise ValueError("max_kis_candidates_per_video must be > 0")
         if fine_temporal_anchors <= 0 or fine_temporal_radius < 0 or fine_temporal_video_limit <= 0: raise ValueError("invalid fine temporal configuration")
@@ -47,9 +47,26 @@ class BaselineQueryEngine(QueryEngine):
 
     def _solve_kis(self, spec: QuerySpec) -> list[dict[str, Any]]:
         hits = self.retriever.retrieve(spec)
-        sparse = select_semantic_keyframes([self._frame_evidence(hit) for hit in hits], max_candidates=max(self.final_limit * 5, 100))
+        # Keep a deliberately wider sparse pool than the final submission. The
+        # temporal stage is a refinement stage, not a hard recall gate.
+        sparse_limit = max(self.final_limit * 5, 100)
+        sparse = select_semantic_keyframes(
+            [self._frame_evidence(hit) for hit in hits],
+            max_candidates=sparse_limit,
+        )
         temporal = self._fine_localize(sparse[: self.fine_temporal_anchors], spec.text)
-        selected = temporal or sparse
+
+        # Preserve the original high-recall CLIP hypotheses even when temporal
+        # localization succeeds. A localized anchor is evidence for a better
+        # frame, not proof that every other sparse candidate is irrelevant.
+        # This prevents the old `temporal or sparse` behavior from collapsing
+        # hundreds of CLIP hypotheses down to only the temporal subset.
+        selected = self._merge_kis_candidates(
+            temporal,
+            sparse,
+            limit=max(self.final_limit * 2, self.fine_temporal_anchors),
+        )
+
         hit_by_exact_frame = {(hit.video_id, hit.frame_id): hit for hit in hits}
         best_hit_by_video: dict[str, RetrievalHit] = {}
         for hit in hits:
@@ -72,6 +89,29 @@ class BaselineQueryEngine(QueryEngine):
             evidence = {"sources": list(hit.sources), "clip_score": hit.retrieval_score, "object_score": hit.object_score, "metadata_score": hit.metadata_score, "ocr_score": hit.ocr_score, "asr_score": hit.asr_score, "temporal_score": temporal_item.score if temporal_item is not None else 0.0, "semantic_score": ranking.semantic_score, "semantic_model": self.semantic_config.model_id if self.semantic_scorer is not None else None, "semantic_weight": ranking.semantic_weight, "rerank_score": ranking.fused_score, "keyframe_n": hit.keyframe_n if temporal_item is None else temporal_item.keyframe_n, "fine_temporal": temporal_item is not None and temporal_item.frame_id != hit.frame_id}
             results.append(Candidate(rank=len(results) + 1, video_id=ranking.video_id, frame_id=ranking.frame_id, score=ranking.fused_score, retrieval_score=hit.retrieval_score, temporal_score=temporal_item.score if temporal_item is not None else 0.0, rerank_score=ranking.fused_score, evidence=evidence).model_dump())
         return results
+
+    @staticmethod
+    def _merge_kis_candidates(temporal: list[Any], sparse: list[Any], *, limit: int) -> list[Any]:
+        """Merge temporal refinements with sparse retrieval without losing recall."""
+        if limit <= 0:
+            return []
+        merged: list[Any] = []
+        seen: set[tuple[str, int]] = set()
+        for item in temporal:
+            key = (item.video_id, item.frame_id)
+            if key in seen:
+                continue
+            seen.add(key)
+            merged.append(item)
+        for item in sparse:
+            key = (item.video_id, item.frame_id)
+            if key in seen:
+                continue
+            seen.add(key)
+            merged.append(item)
+            if len(merged) >= limit:
+                break
+        return merged[:limit]
 
     def _semantic_scores(self, items: list[FrameEvidence], text: str) -> dict[tuple[str, int], float]:
         if self.semantic_scorer is None or not items or not text.strip(): return {}
@@ -98,13 +138,6 @@ class BaselineQueryEngine(QueryEngine):
         if not self.semantic_config.normalize_scores or len(raw_scores) == 1:
             return {key: max(0.0, min(1.0, value)) for key, value in raw_scores.items()}
 
-        # SigLIP probabilities are calibrated as independent image/text
-        # compatibility probabilities, not as scores whose absolute scale is
-        # guaranteed to match CLIP retrieval. On this dataset/domain they can
-        # all be extremely small (for example ~1e-6), which would make a
-        # configured semantic weight effectively disappear in fusion. For
-        # reranking we therefore preserve ordering but calibrate the candidate
-        # set to [0, 1] before combining it with retrieval/temporal evidence.
         values = np.asarray(list(raw_scores.values()), dtype=np.float32)
         low = float(values.min())
         high = float(values.max())
