@@ -1,0 +1,14 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "array",
+  "items": {
+    "type": "object",
+    "required": ["query", "positive_frame", "negative_frame"],
+    "properties": {
+      "query": {"type": "string", "minLength": 1},
+      "positive_frame": {"type": "string", "minLength": 1},
+      "negative_frame": {"type": "string", "minLength": 1},
+      "category": {"type": "string"}
+    }
+  }
+}
