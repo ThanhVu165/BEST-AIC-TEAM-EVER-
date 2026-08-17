@@ -20,9 +20,7 @@ class TransformersImageAnswerExtractor:
         *,
         device: str = "auto",
         max_new_tokens: int = 64,
-        prompt_template: str = (
-            "Answer the question using only the image. Question: {question}"
-        ),
+        prompt_template: str = "Answer the question using only the image. Question: {question}",
     ) -> None:
         if not model_name.strip():
             raise ValueError("model_name must not be empty")
@@ -59,9 +57,12 @@ class TransformersImageAnswerExtractor:
         self.device = device
 
     def answer(self, evidence: AnswerEvidence) -> AnswerResult:
-        frame_path = Path(evidence.frame_path)
-        if not frame_path.is_file():
-            return AnswerResult("", None, "evidence_unavailable")
+        if evidence.image is None:
+            if not evidence.frame_path:
+                return AnswerResult("", None, "evidence_unavailable")
+            frame_path = Path(evidence.frame_path)
+            if not frame_path.is_file():
+                return AnswerResult("", None, "evidence_unavailable")
 
         self._load()
         assert self._processor is not None
@@ -73,7 +74,11 @@ class TransformersImageAnswerExtractor:
         except ImportError as exc:  # pragma: no cover - optional ML runtime
             raise RuntimeError("Pillow is required for VLM answer extraction") from exc
 
-        image = Image.open(frame_path).convert("RGB")
+        if evidence.image is not None:
+            image = Image.fromarray(evidence.image).convert("RGB")
+        else:
+            image = Image.open(evidence.frame_path).convert("RGB")
+
         prompt = self.prompt_template.format(question=evidence.question)
         inputs = self._processor(images=image, text=prompt, return_tensors="pt")
         inputs = {
@@ -87,7 +92,5 @@ class TransformersImageAnswerExtractor:
                 max_new_tokens=self.max_new_tokens,
                 do_sample=False,
             )
-        answer = self._processor.batch_decode(
-            output_ids, skip_special_tokens=True
-        )[0].strip()
+        answer = self._processor.batch_decode(output_ids, skip_special_tokens=True)[0].strip()
         return AnswerResult(answer, None, "completed" if answer else "empty_answer")
