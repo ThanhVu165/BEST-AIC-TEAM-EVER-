@@ -66,9 +66,24 @@ class DataStore(ABC):
 class LocalDataStore(DataStore):
     """SQLite + optional FAISS implementation for a single-machine deployment."""
 
-    def __init__(self, db_path: str | Path, clip_index: Any | None = None):
-        self.db_path = Path(db_path)
+    def __init__(
+        self,
+        db_path: str | Path,
+        clip_index: Any | None = None,
+        *,
+        project_root: str | Path | None = None,
+    ):
+        self.db_path = Path(db_path).resolve()
         self.clip_index = clip_index
+        # build_data_package stores repository-relative video paths. Resolve
+        # those against the repository root rather than against ``database/``.
+        # An explicit root is preferred; otherwise database/aic2026.sqlite is
+        # assumed to live two levels below the repository root.
+        self.project_root = (
+            Path(project_root).resolve()
+            if project_root is not None
+            else self.db_path.parent.parent.resolve()
+        )
 
     def _connect(self) -> sqlite3.Connection:
         if not self.db_path.is_file():
@@ -171,14 +186,26 @@ class LocalDataStore(DataStore):
             return None
         return payload if isinstance(payload, dict) else None
 
+    def _resolve_repo_path(self, stored_path: str | Path) -> Path | None:
+        path = Path(stored_path)
+        candidates = [
+            path if path.is_absolute() else self.project_root / path,
+            path if path.is_absolute() else self.db_path.parent / path,
+        ]
+        for candidate in candidates:
+            try:
+                resolved = candidate.resolve()
+            except OSError:
+                continue
+            if resolved.is_file():
+                return resolved
+        return None
+
     def _video_path(self, video_id: str) -> Path | None:
         video = self.get_video(video_id)
         if video is None:
             return None
-        path = Path(video.path)
-        if not path.is_file() and not path.is_absolute():
-            path = self.db_path.parent / path
-        return path if path.is_file() else None
+        return self._resolve_repo_path(video.path)
 
     def read_source_frame(self, video_id: str, frame_id: int) -> Any | None:
         frames = self.read_source_frames(video_id, [frame_id])
