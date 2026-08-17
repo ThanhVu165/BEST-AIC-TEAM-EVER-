@@ -40,13 +40,13 @@ def test_ordered_alignment_prefers_high_score_temporal_path() -> None:
     assert [item.frame_id for item in selected] == [20, 90]
 
 
-def test_ordered_alignment_allows_same_frame_by_default() -> None:
+def test_ordered_alignment_is_strict_by_default() -> None:
     events = [[_frame(20, 0.8)], [_frame(20, 0.9)]]
     selected = select_ordered_event_frames(events)
-    assert [item.frame_id for item in selected] == [20, 20]
+    assert selected == []
 
 
-def test_ordered_alignment_falls_back_when_no_strict_path_exists() -> None:
+def test_ordered_alignment_returns_empty_when_no_strict_path_exists() -> None:
     events = [[_frame(20, 0.8)], [_frame(10, 0.9)]]
     selected = select_ordered_event_frames(events, allow_same_frame=False)
-    assert [item.frame_id for item in selected] == [20, 10]
+    assert selected == []
