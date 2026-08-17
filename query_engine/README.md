@@ -43,7 +43,7 @@ Do not hard-code a single model as the solution. Each expensive model must be ev
 google/siglip2-base-patch16-256
 ```
 
-The checkpoint is loaded only when the backend is enabled and first used. The model is intended for image-text retrieval and semantic understanding; its Transformers interface supports retrieval-style text/image scoring. citeturn0search3turn0search11
+The checkpoint is loaded only when the backend is enabled and first used. SigLIP2 is intended for image-text retrieval and semantic understanding, and its Transformers interface supports retrieval-style text/image scoring.
 
 The full natural-language query is passed to the visual encoder so relations such as `person riding motorcycle` are not reduced to independent object tokens. Structured `entity/action/relation` fields remain inspectable auxiliary information.
 
