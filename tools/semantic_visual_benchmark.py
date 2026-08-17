@@ -38,23 +38,31 @@ def main() -> None:
     args = parser.parse_args()
 
     rows = json.loads(args.manifest.read_text(encoding="utf-8"))
+    if not isinstance(rows, list) or not rows:
+        raise ValueError("benchmark manifest must be a non-empty JSON list")
+
     scorer = _build_scorer(args.backend)
     wins = 0
     margins: list[float] = []
     latencies: list[float] = []
+    root = args.root or args.manifest.parent
 
     for row in rows:
-        root = args.root or args.manifest.parent
         positive_path = (root / row["positive_frame"]).resolve()
         negative_path = (root / row["negative_frame"]).resolve()
         if not positive_path.is_file() or not negative_path.is_file():
             raise FileNotFoundError(f"missing benchmark frame: {positive_path} or {negative_path}")
 
         images = [_load_image(positive_path), _load_image(negative_path)]
-        start = time.perf_counter()
-        scores = scorer.score_images(images, row["query"])
-        latencies.append((time.perf_counter() - start) * 1000.0)
-        positive, negative = map(float, scores)
+        try:
+            start = time.perf_counter()
+            scores = scorer.score_images(images, row["query"])
+            latencies.append((time.perf_counter() - start) * 1000.0)
+            positive, negative = map(float, scores)
+        finally:
+            for image in images:
+                image.close()
+
         margins.append(positive - negative)
         wins += int(positive > negative)
 
