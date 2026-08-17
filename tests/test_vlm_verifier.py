@@ -1,7 +1,7 @@
 import pytest
 
 from query_engine.vlm_verifier import (
-    Qwen25VLVerifier,
+    Qwen3VLVerifier,
     VLMVerifierConfig,
     build_vlm_verifier,
 )
@@ -10,6 +10,7 @@ from query_engine.vlm_verifier import (
 def test_vlm_verifier_is_disabled_by_default():
     config = VLMVerifierConfig()
     assert config.enabled is False
+    assert config.model_id == "Qwen/Qwen3-VL-8B-Instruct"
     assert build_vlm_verifier(config) is None
 
 
@@ -21,12 +22,12 @@ def test_vlm_verifier_config_validates():
 
 
 def test_qwen_verifier_is_lazy():
-    verifier = Qwen25VLVerifier()
+    verifier = Qwen3VLVerifier()
     assert verifier._model is None
     assert verifier._processor is None
 
 
 def test_score_parser_handles_json_and_fallback():
-    assert Qwen25VLVerifier._parse_score('{"score": 0.83, "reason": "riding"}') == pytest.approx(0.83)
-    assert Qwen25VLVerifier._parse_score('score: 0.27') == pytest.approx(0.27)
-    assert Qwen25VLVerifier._parse_score('{"score": 4}') == 1.0
+    assert Qwen3VLVerifier._parse_score('{"score": 0.83, "reason": "riding"}') == pytest.approx(0.83)
+    assert Qwen3VLVerifier._parse_score('score: 0.27') == pytest.approx(0.27)
+    assert Qwen3VLVerifier._parse_score('{"score": 4}') == 1.0
