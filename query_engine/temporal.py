@@ -42,6 +42,9 @@ class SourceFrameReader(Protocol):
     def read_source_frame(self, video_id: str, frame_id: int) -> Any | None:
         ...
 
+    def read_source_frames(self, video_id: str, frame_ids: list[int]) -> dict[int, Any]:
+        ...
+
 
 class ImageEncoder(Protocol):
     def encode(self, text: str):  # pragma: no cover - protocol
@@ -132,19 +135,18 @@ def fine_localize_source_frames(
         anchor_keyframe_n = anchor.keyframe_n
         anchor_timestamp = anchor.timestamp
 
-        frame_ids = range(
+        frame_ids = list(range(
             max(0, anchor.frame_id - radius),
             anchor.frame_id + radius + 1,
             stride,
-        )
-        images: list[Any] = []
-        valid_ids: list[int] = []
-        for frame_id in frame_ids:
-            image = reader.read_source_frame(anchor.video_id, frame_id)
-            if image is None:
-                continue
-            images.append(image)
-            valid_ids.append(frame_id)
+        ))
+        # Read the entire local window through the batch contract. This is
+        # essential for H.264: read_source_frame() used to perform one
+        # CAP_PROP_POS_FRAMES seek per frame, which can trigger decoder
+        # reference-picture errors and pathological seek latency.
+        images_by_id = reader.read_source_frames(anchor.video_id, frame_ids)
+        valid_ids = [frame_id for frame_id in frame_ids if frame_id in images_by_id]
+        images = [images_by_id[frame_id] for frame_id in valid_ids]
         if not images:
             fallback = TemporalCandidate(
                 video_id=anchor.video_id,
