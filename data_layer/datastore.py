@@ -212,6 +212,15 @@ class LocalDataStore(DataStore):
         return frames.get(frame_id)
 
     def read_source_frames(self, video_id: str, frame_ids: list[int]) -> dict[int, Any]:
+        """Read source frames while avoiding repeated H.264 random seeks.
+
+        Fine temporal localization requests small contiguous frame windows.
+        Repeated ``CAP_PROP_POS_FRAMES`` calls on H.264 are fragile and can
+        trigger decoder reference-picture errors (and very slow seeks). For
+        compact requests we seek once to the first requested frame and decode
+        forward in presentation order. Sparse requests still use individual
+        seeks so we do not accidentally decode thousands of unused frames.
+        """
         if not frame_ids:
             return {}
         if any(frame_id < 0 for frame_id in frame_ids):
@@ -230,8 +239,30 @@ class LocalDataStore(DataStore):
         try:
             if not capture.isOpened():
                 return {}
+
+            # Temporal localization uses compact windows (typically <= 33
+            # frames). Decode those windows sequentially after one seek.
+            span = wanted[-1] - wanted[0]
+            if span <= 256:
+                if not capture.set(cv2.CAP_PROP_POS_FRAMES, wanted[0]):
+                    return {}
+                wanted_set = set(wanted)
+                current = wanted[0]
+                while current <= wanted[-1]:
+                    ok, frame = capture.read()
+                    if not ok or frame is None:
+                        break
+                    if current in wanted_set:
+                        output[current] = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+                    current += 1
+                return output
+
+            # For genuinely sparse requests retain the old seek-per-frame
+            # behaviour; these requests can span a large portion of a video,
+            # where sequential decoding would be substantially more expensive.
             for frame_id in wanted:
-                capture.set(cv2.CAP_PROP_POS_FRAMES, frame_id)
+                if not capture.set(cv2.CAP_PROP_POS_FRAMES, frame_id):
+                    continue
                 ok, frame = capture.read()
                 if not ok or frame is None:
                     continue
