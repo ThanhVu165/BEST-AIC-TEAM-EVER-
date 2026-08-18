@@ -9,6 +9,12 @@ class FakeReader:
     def read_source_frame(self, video_id: str, frame_id: int):
         return np.full((2, 2, 3), frame_id, dtype=np.uint8)
 
+    def read_source_frames(self, video_id: str, frame_ids):
+        return {
+            frame_id: self.read_source_frame(video_id, frame_id)
+            for frame_id in frame_ids
+        }
+
 
 class FakeEncoder:
     def encode(self, text: str):
