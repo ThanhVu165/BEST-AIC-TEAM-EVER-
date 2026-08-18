@@ -19,13 +19,7 @@ class FrameEvidence:
 
 @dataclass(frozen=True)
 class TemporalCandidate:
-    """Temporally grounded frame hypothesis.
-
-    ``anchor_frame_id`` and ``anchor_retrieval_score`` preserve provenance when
-    localization moves an anchor to a different source-video frame. The
-    retrieval score is therefore never silently presented as evidence from the
-    localized frame itself.
-    """
+    """Temporally grounded frame hypothesis with retrieval provenance."""
 
     video_id: str
     frame_id: int
@@ -35,6 +29,13 @@ class TemporalCandidate:
     rank: int
     anchor_frame_id: int | None = None
     anchor_retrieval_score: float | None = None
+
+    @property
+    def retrieval_score(self) -> float:
+        """Backward-compatible alias for the retrieval score of the anchor."""
+        if self.anchor_retrieval_score is not None:
+            return float(self.anchor_retrieval_score)
+        return float(self.score)
 
 
 class SourceFrameReader(Protocol):
@@ -60,12 +61,7 @@ def select_semantic_keyframes(
     *,
     max_candidates: int = 100,
 ) -> list[TemporalCandidate]:
-    """Select deterministic keyframe hypotheses from retrieved evidence.
-
-    This stage is a candidate selector. When source-video access and an image
-    encoder are available, ``fine_localize_source_frames`` performs the actual
-    frame-level grounding before this output is used as the final hypothesis.
-    """
+    """Select deterministic keyframe hypotheses from retrieved evidence."""
     if max_candidates <= 0:
         return []
     ordered = sorted(
@@ -93,7 +89,7 @@ def select_semantic_keyframes(
 
 
 def fine_localize_source_frames(
-    frames: Sequence[FrameEvidence],
+    frames: Sequence[FrameEvidence | TemporalCandidate],
     *,
     query_text: str,
     reader: SourceFrameReader,
@@ -106,14 +102,9 @@ def fine_localize_source_frames(
     """Refine retrieved hypotheses against original-video frames.
 
     Each sparse retrieval hit is treated as an anchor, not as the final answer.
-    A small source-video neighborhood is decoded and scored with CLIP image
-    embeddings against the same natural-language query. The returned frame_id
-    is therefore an original-video frame ID, including non-keyframes when the
-    source video is available.
-
-    Retrieval provenance is kept separately from the localized frame so later
-    ranking cannot accidentally combine a frame B with metadata/score belonging
-    to an unrelated frame A.
+    The function accepts both ``FrameEvidence`` anchors and ``TemporalCandidate``
+    hypotheses so the KIS pipeline can explicitly preserve provenance between
+    sparse selection and fine localization.
     """
     if not query_text.strip():
         raise ValueError("query_text must not be empty")
@@ -122,7 +113,11 @@ def fine_localize_source_frames(
 
     anchors = sorted(
         frames,
-        key=lambda item: (-_safe_score(item.retrieval_score), item.video_id, item.frame_id),
+        key=lambda item: (
+            -_safe_score(item.retrieval_score),
+            item.video_id,
+            item.frame_id,
+        ),
     )[: max_candidates * 2]
     if not anchors:
         return []
@@ -132,6 +127,11 @@ def fine_localize_source_frames(
 
     best_by_key: dict[tuple[str, int], TemporalCandidate] = {}
     for anchor in anchors:
+        anchor_retrieval_score = float(anchor.retrieval_score)
+        anchor_frame_id = anchor.anchor_frame_id if isinstance(anchor, TemporalCandidate) and anchor.anchor_frame_id is not None else anchor.frame_id
+        anchor_keyframe_n = anchor.keyframe_n
+        anchor_timestamp = anchor.timestamp
+
         frame_ids = range(
             max(0, anchor.frame_id - radius),
             anchor.frame_id + radius + 1,
@@ -149,12 +149,12 @@ def fine_localize_source_frames(
             fallback = TemporalCandidate(
                 video_id=anchor.video_id,
                 frame_id=anchor.frame_id,
-                keyframe_n=anchor.keyframe_n,
-                timestamp=anchor.timestamp,
-                score=anchor.retrieval_score,
+                keyframe_n=anchor_keyframe_n,
+                timestamp=anchor_timestamp,
+                score=anchor_retrieval_score,
                 rank=0,
-                anchor_frame_id=anchor.frame_id,
-                anchor_retrieval_score=anchor.retrieval_score,
+                anchor_frame_id=anchor_frame_id,
+                anchor_retrieval_score=anchor_retrieval_score,
             )
             best_by_key[(fallback.video_id, fallback.frame_id)] = fallback
             continue
@@ -167,12 +167,12 @@ def fine_localize_source_frames(
         candidate = TemporalCandidate(
             video_id=anchor.video_id,
             frame_id=best_frame_id,
-            keyframe_n=anchor.keyframe_n if best_frame_id == anchor.frame_id else None,
-            timestamp=None,
+            keyframe_n=anchor_keyframe_n if best_frame_id == anchor_frame_id else None,
+            timestamp=anchor_timestamp if best_frame_id == anchor_frame_id else None,
             score=best_score,
             rank=0,
-            anchor_frame_id=anchor.frame_id,
-            anchor_retrieval_score=anchor.retrieval_score,
+            anchor_frame_id=anchor_frame_id,
+            anchor_retrieval_score=anchor_retrieval_score,
         )
         key = (candidate.video_id, candidate.frame_id)
         previous = best_by_key.get(key)
